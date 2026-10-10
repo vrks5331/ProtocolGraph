@@ -1,25 +1,38 @@
+from collections.abc import Mapping
+from typing import Any
+
 import networkx as nx
 
-ALLOWED_TYPES = {'objective','endpoint','procedure','visit','eligibility','analysis'}
-ALLOWED_EDGES = {'SUPPORTS','MEASURED_BY','SCHEDULED_AT','ANALYZED_BY','REQUIRES_AT'}
+from .contracts import GraphPayload
 
-def build_graph(payload: dict) -> nx.DiGraph:
+
+def build_graph(payload: GraphPayload | Mapping[str, Any]) -> nx.DiGraph:
+    """Build a NetworkX graph from a structurally validated payload."""
+    validated = (
+        payload
+        if isinstance(payload, GraphPayload)
+        else GraphPayload.model_validate(payload)
+    )
+    data = validated.model_dump(exclude_none=True)
     graph = nx.DiGraph()
-    for node in payload.get('nodes', []):
-        if node['type'] not in ALLOWED_TYPES:
-            raise ValueError(f"Unknown node type: {node['type']}")
-        attrs = {k: v for k, v in node.items() if k != 'id'}
-        graph.add_node(node['id'], **attrs)
-    for edge in payload.get('edges', []):
-        if edge['type'] not in ALLOWED_EDGES:
-            raise ValueError(f"Unknown edge type: {edge['type']}")
-        if edge['source'] not in graph or edge['target'] not in graph:
-            raise ValueError(f"Edge references missing node: {edge}")
-        graph.add_edge(edge['source'], edge['target'], type=edge['type'])
+    for node in data["nodes"]:
+        node_id = node.pop("id")
+        graph.add_node(node_id, **node)
+    for edge in data["edges"]:
+        source = edge.pop("source")
+        target = edge.pop("target")
+        graph.add_edge(source, target, **edge)
     return graph
 
+
 def graph_json(graph: nx.DiGraph) -> dict:
-    return {
-        'nodes': [{'id': n, **dict(d)} for n, d in graph.nodes(data=True)],
-        'edges': [{'source': u, 'target': v, **dict(d)} for u, v, d in graph.edges(data=True)]
-    }
+    payload = GraphPayload.model_validate(
+        {
+            "nodes": [{"id": node_id, **dict(data)} for node_id, data in graph.nodes(data=True)],
+            "edges": [
+                {"source": source, "target": target, **dict(data)}
+                for source, target, data in graph.edges(data=True)
+            ],
+        }
+    )
+    return payload.model_dump(exclude_none=True)

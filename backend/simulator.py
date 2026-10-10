@@ -1,13 +1,14 @@
 import copy
 import networkx as nx
+
+from .contracts import EDITABLE_SCHEDULE_FIELDS
 from .rules import validate
 
-EDITABLE_FIELDS = {'required_day', 'day', 'window_before_days', 'window_after_days'}
 
 def simulate(graph: nx.DiGraph, node_id: str, changes: dict) -> dict:
     if node_id not in graph:
         raise ValueError(f'Unknown node: {node_id}')
-    if not changes or set(changes) - EDITABLE_FIELDS:
+    if not changes or set(changes) - EDITABLE_SCHEDULE_FIELDS:
         raise ValueError('Only schedule-related fields may be changed')
     for value in changes.values():
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
