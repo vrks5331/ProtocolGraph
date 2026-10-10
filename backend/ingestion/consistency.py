@@ -10,8 +10,8 @@ import re
 import unicodedata
 from typing import Any
 
-from ..contracts import GraphPayload, NodeType, PageText
-from .schema import EDGE_SIGNATURES, ConsistencyIssue, ExtractionError
+from ..contracts import ExtractionIssue, GraphPayload, NodeType, PageText
+from .schema import EDGE_SIGNATURES, ExtractionError
 
 FIELD_OWNERS: dict[str, str] = {
     "required_day": NodeType.ENDPOINT.value,
@@ -46,37 +46,14 @@ def _edge_id(edge: dict[str, Any]) -> str:
     return edge.get("id") or f"{edge['source']}__{edge['type']}__{edge['target']}"
 
 
-def shift_negative_days(data: dict[str, Any]) -> list[ConsistencyIssue]:
-    """Move pre-Day-1 visits (e.g. screening at day -14) to day 0.
-
-    The shared contract requires day >= 0, so the visit is re-expressed as
-    day 0 with a before-window that keeps its earliest allowed day.
-    """
-    issues = []
-    for node in data.get("nodes", []):
-        day = node.get("day")
-        if node.get("type") != NodeType.VISIT.value or day is None or day >= 0:
-            continue
-        before = node.get("window_before_days") or 0
-        after = node.get("window_after_days") or 0
-        node["day"] = 0
-        node["window_before_days"] = before - day
-        node["window_after_days"] = max(0, day + after)
-        issues.append(ConsistencyIssue(
-            rule="negative_day", action="adjusted_day", item_id=node["id"],
-            message=f"Day {day} re-expressed as day 0 with a "
-                    f"{node['window_before_days']}-day before-window"))
-    return issues
-
-
 def check(
     payload: GraphPayload, pages: list[PageText]
-) -> tuple[GraphPayload, list[ConsistencyIssue]]:
-    issues: list[ConsistencyIssue] = []
+) -> tuple[GraphPayload, list[ExtractionIssue]]:
+    issues: list[ExtractionIssue] = []
 
     def report(rule: str, action: str, item_id: str, message: str) -> None:
         issues.append(
-            ConsistencyIssue(rule=rule, action=action, item_id=item_id, message=message)
+            ExtractionIssue(rule=rule, action=action, item_id=item_id, message=message)
         )
 
     page_text = {page.page: _normalize(page.text) for page in pages}
@@ -155,11 +132,10 @@ def check(
         edge["id"] = _edge_id(edge)
 
     if not nodes or not edges:
-        details = "; ".join(f"{i.item_id}: {i.message}" for i in issues)
+        dropped = sum(i.action.startswith("dropped") for i in issues)
         raise ExtractionError(
-            "Extraction produced no usable "
-            f"{'nodes' if not nodes else 'edges'}"
-            + (f" ({details})" if details else "")
+            f"Extraction produced no usable {'nodes' if not nodes else 'edges'} "
+            f"({dropped} items failed consistency checks)"
         )
     return GraphPayload.model_validate({"nodes": nodes, "edges": edges}), issues
 

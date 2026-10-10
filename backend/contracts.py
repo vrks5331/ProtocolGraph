@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -48,7 +48,8 @@ class Node(BaseModel):
     field: str | None = None
     value: Any | None = None
     required_day: int | None = Field(default=None, ge=0)
-    day: int | None = Field(default=None, ge=0)
+    # Study day relative to Day 1; pre-treatment visits such as screening are negative.
+    day: int | None = None
     window_before_days: int | None = Field(default=None, ge=0)
     window_after_days: int | None = Field(default=None, ge=0)
 
@@ -108,6 +109,25 @@ class Finding(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
 
 
+ExtractionAction = Literal[
+    "dropped_node",
+    "dropped_edge",
+    "merged_edge",
+    "stripped_field",
+    "corrected_page",
+    "fuzzy_match",
+]
+
+
+class ExtractionIssue(BaseModel):
+    """A repair or removal made while checking an extracted graph."""
+
+    rule: str = Field(min_length=1)
+    action: ExtractionAction
+    item_id: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+
+
 ScheduleValue = Annotated[StrictInt, Field(ge=0)]
 EDITABLE_SCHEDULE_FIELDS = frozenset(
     {"required_day", "day", "window_before_days", "window_after_days"}
@@ -156,6 +176,7 @@ class AnalysisResponse(BaseModel):
     analysis_id: str
     graph: GraphPayload
     findings: list[Finding] = Field(default_factory=list)
+    extraction_issues: list[ExtractionIssue] = Field(default_factory=list)
 
 
 class HistoryResponse(BaseModel):

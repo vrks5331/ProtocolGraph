@@ -7,7 +7,7 @@ import pytest
 from pypdf import PdfWriter
 
 from backend.contracts import GraphPayload, PageText
-from backend.ingestion import ExtractionError, extract_analysis, extract_graph
+from backend.ingestion import ExtractionError, extract_analysis
 from backend.ingestion.consistency import check
 from backend.ingestion.pdf_reader import extract_pages
 
@@ -113,8 +113,8 @@ def test_extract_pages_rejects_non_pdf():
 
 def test_invalid_output_is_retried_with_feedback():
     client = FakeClient("{not json", gemini_output())
-    payload = extract_graph(baseline_pdf(), client=client)
-    assert len(payload.nodes) == 5
+    result = extract_analysis(baseline_pdf(), client=client)
+    assert len(result.graph.nodes) == 5
     assert "failed validation" in client.prompts[1]
 
 
@@ -122,14 +122,14 @@ def test_invalid_output_twice_raises():
     bad_type = gemini_output()
     bad_type["nodes"][0]["type"] = "not-a-type"
     with pytest.raises(ExtractionError, match="failed validation after 2"):
-        extract_graph(baseline_pdf(), client=FakeClient("{}", bad_type))
+        extract_analysis(baseline_pdf(), client=FakeClient("{}", bad_type))
 
 
 def test_dangling_edge_fails_structural_validation():
     data = gemini_output()
     data["edges"].append({"source": "ct_scan", "target": "ghost", "type": "SCHEDULED_AT"})
     with pytest.raises(ExtractionError):
-        extract_graph(baseline_pdf(), client=FakeClient(data, data))
+        extract_analysis(baseline_pdf(), client=FakeClient(data, data))
 
 
 # Layer 2: consistency rules
@@ -265,7 +265,7 @@ def test_short_table_quote_is_kept_when_label_is_on_page():
 
 def test_word_match_rejects_words_missing_from_page():
     quote = "Treatment Cycle/Title: 2 Scheduling Window (Days): ± 7 weeks"
-    with pytest.raises(ExtractionError, match="does not appear"):
+    with pytest.raises(ExtractionError, match="no usable edges"):
         check(table_graph(quote), [TABLE_PAGE])
 
 
@@ -285,13 +285,12 @@ def test_edges_get_stable_ids():
     ]
 
 
-def test_negative_visit_day_is_shifted_to_day_zero():
+def test_negative_screening_day_is_kept():
     data = gemini_output()
     data["nodes"][4]["day"] = -14
-    record = extract_analysis(baseline_pdf(), "p.pdf", client=FakeClient(data))
-    visit = json.loads(record.graph_json)["nodes"][4]
-    assert (visit["day"], visit["window_before_days"], visit["window_after_days"]) == (0, 17, 0)
-    assert json.loads(record.issues_json)[0]["action"] == "adjusted_day"
+    result = extract_analysis(baseline_pdf(), client=FakeClient(data))
+    assert result.graph.nodes[4].day == -14
+    assert result.issues == []
 
 
 def test_graph_without_edges_is_fatal():
@@ -301,21 +300,17 @@ def test_graph_without_edges_is_fatal():
 
 # End to end
 
-def test_extract_analysis_returns_serialized_record():
-    record = extract_analysis(baseline_pdf(), "protocol.pdf",
-                              client=FakeClient(gemini_output()))
-    graph = GraphPayload.model_validate(json.loads(record.graph_json))
-    assert record.pdf_filename == "protocol.pdf"
-    assert {n.id for n in graph.nodes} == {n["id"] for n in BASELINE["nodes"]}
-    assert json.loads(record.findings_json) == []
-    assert json.loads(record.issues_json) == []
-    assert json.loads(record.ext_json) == gemini_output()
+def test_extract_analysis_returns_graph_raw_output_and_issues():
+    result = extract_analysis(baseline_pdf(), client=FakeClient(gemini_output()))
+    assert {n.id for n in result.graph.nodes} == {n["id"] for n in BASELINE["nodes"]}
+    assert json.loads(result.raw_json) == gemini_output()
+    assert result.issues == []
 
 
-def test_required_flag_reaches_stored_graph():
+def test_required_flag_reaches_graph():
     data = gemini_output()
     data["edges"][0]["required"] = True
     data["edges"][1]["required"] = False
-    record = extract_analysis(baseline_pdf(), "protocol.pdf", client=FakeClient(data))
-    edges = json.loads(record.graph_json)["edges"]
+    result = extract_analysis(baseline_pdf(), client=FakeClient(data))
+    edges = result.graph.model_dump()["edges"]
     assert [edge["required"] for edge in edges] == [True, False]
