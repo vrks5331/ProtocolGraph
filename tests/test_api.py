@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sqlite3
 from uuid import UUID
@@ -6,15 +7,27 @@ from fastapi.testclient import TestClient
 import pytest
 
 from backend import main, storage
-from backend.contracts import AnalysisResponse, GraphPayload, HistoryResponse
+from backend.contracts import AnalysisResponse, ExtractionIssue, GraphPayload, HistoryResponse
 from backend.graph_engine import build_graph, graph_json
+from backend.ingestion import ExtractionError, ExtractionResult
 from backend.rules import validate
 
 ROOT = Path(__file__).resolve().parents[1]
+PDF_BYTES = b"%PDF-1.7\n"
+ISSUE = ExtractionIssue(rule="source_grounding", action="fuzzy_match",
+                        item_id="ct_scan", message="likely a table")
 
 
 def payload(name):
     return GraphPayload.model_validate_json((ROOT / "data" / f"{name}.json").read_text())
+
+
+def raw_json(name):
+    return (ROOT / "data" / f"{name}.json").read_text()
+
+
+def extraction(name, issues=()):
+    return ExtractionResult(graph=payload(name), raw_json=raw_json(name), issues=list(issues))
 
 
 @pytest.fixture
@@ -26,12 +39,12 @@ def client(tmp_path):
     main.app.dependency_overrides.clear()
 
 
-def upload(client, name="baseline", filename="protocol.pdf"):
+def upload(client, name="baseline", filename="protocol.pdf", issues=()):
     def extractor(pdf_bytes):
-        assert pdf_bytes.startswith(b"%PDF-")
-        return payload(name)
+        assert pdf_bytes == PDF_BYTES
+        return extraction(name, issues)
     main.app.dependency_overrides[main.get_extractor] = lambda: extractor
-    return client.post("/analyze", files={"file": (filename, b"%PDF-1.7\n", "application/pdf")})
+    return client.post("/analyze", files={"file": (filename, PDF_BYTES, "application/pdf")})
 
 
 def test_creation_empty_history_and_docs(client):
@@ -40,6 +53,13 @@ def test_creation_empty_history_and_docs(client):
     assert db_path.is_file()
     assert api.get("/docs").status_code == 200
     assert api.get("/openapi.json").status_code == 200
+
+
+@pytest.mark.parametrize("origin, allowed", [
+    ("http://localhost:5173", True), ("https://evil.example", False)])
+def test_cors_allows_only_frontend_origins(client, origin, allowed):
+    response = client[0].get("/history", headers={"Origin": origin})
+    assert (response.headers.get("access-control-allow-origin") == origin) is allowed
 
 
 @pytest.mark.parametrize("name", ["baseline", "injected"])
@@ -56,7 +76,7 @@ def test_analyze_and_exact_retrieval(client, name):
     )
     assert api.get(f"/graph/{result.analysis_id}").json() == response.json()
     stored = storage.fetch_analysis(result.analysis_id, db_path)
-    assert stored["extracted"] == payload(name)
+    assert stored["extracted"] == json.loads(raw_json(name))
     assert stored["graph"] == result.graph
     assert stored["findings"] == result.findings
     assert stored["created_at"].tzinfo is not None
@@ -95,7 +115,8 @@ def test_oversized_upload(client, monkeypatch):
     assert client[0].post("/analyze", files={"file": ("test.pdf", b"%PDF-" + b"x" * 10)}).status_code == 413
 
 
-def test_extraction_unavailable(client):
+def test_extraction_unavailable(client, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     response = client[0].post("/analyze", files={"file": ("test.pdf", b"%PDF-1.7")})
     assert response.status_code == 503
     assert "extraction" in response.json()["detail"]
@@ -136,7 +157,62 @@ def test_separate_databases_and_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("PROTOCOLGRAPH_DB_PATH", str(first))
     storage.initialize_db()
     graph = build_graph(payload("baseline"))
-    analysis_id = storage.save_analysis("O'Brien.pdf", payload("baseline"), graph_json(graph), validate(graph))
+    analysis_id = storage.save_analysis("O'Brien.pdf", raw_json("baseline"), graph_json(graph), validate(graph))
     assert storage.fetch_analysis(analysis_id)["filename"] == "O'Brien.pdf"
     assert storage.list_history(second) == []
     assert storage.fetch_analysis(analysis_id, second) is None
+
+
+def test_extraction_error_is_reported_and_not_saved(client):
+    def extractor(pdf_bytes):
+        raise ExtractionError("PDF contains no extractable text")
+    main.app.dependency_overrides[main.get_extractor] = lambda: extractor
+    response = client[0].post("/analyze", files={"file": ("scan.pdf", PDF_BYTES)})
+    assert response.status_code == 422
+    assert response.json() == {"detail": "PDF contains no extractable text"}
+    assert client[0].get("/history").json() == {"analyses": []}
+
+
+def test_extraction_issues_are_returned_and_stored(client):
+    api, db_path = client
+    response = upload(api, issues=[ISSUE])
+    assert response.json()["extraction_issues"] == [ISSUE.model_dump()]
+    analysis_id = response.json()["analysis_id"]
+    assert api.get(f"/graph/{analysis_id}").json()["extraction_issues"] == [ISSUE.model_dump()]
+
+
+def test_uploaded_pdf_is_stored_and_served(client):
+    api, db_path = client
+    analysis_id = upload(api, filename="trial.pdf").json()["analysis_id"]
+    stored = storage.fetch_analysis(analysis_id, db_path)
+    assert Path(stored["pdf_path"]).parent == db_path.parent / "pdfs"
+    response = api.get(f"/graph/{analysis_id}/pdf")
+    assert response.status_code == 200
+    assert response.content == PDF_BYTES
+    assert response.headers["content-type"] == "application/pdf"
+    assert api.get("/graph/unknown/pdf").status_code == 404
+
+
+def test_pdf_is_removed_when_insert_fails(tmp_path, monkeypatch):
+    db_path = tmp_path / "analyses.sqlite3"
+    storage.initialize_db(db_path)
+    with sqlite3.connect(db_path) as db:
+        db.execute("CREATE TRIGGER no_insert BEFORE INSERT ON analyses "
+                   "BEGIN SELECT RAISE(ABORT, 'blocked'); END")
+    graph = build_graph(payload("baseline"))
+    with pytest.raises(sqlite3.DatabaseError):
+        storage.save_analysis("x.pdf", raw_json("baseline"), graph_json(graph), [],
+                              db_path=db_path, pdf_bytes=PDF_BYTES)
+    assert list((tmp_path / "pdfs").iterdir()) == []
+
+
+def test_existing_database_gains_issues_column(tmp_path):
+    db_path = tmp_path / "old.sqlite3"
+    with sqlite3.connect(db_path) as db:
+        db.execute("""CREATE TABLE analyses (
+            id TEXT PRIMARY KEY, filename TEXT NOT NULL, created_at TEXT NOT NULL,
+            extracted_json TEXT NOT NULL, graph_json TEXT NOT NULL,
+            findings_json TEXT NOT NULL, pdf_path TEXT)""")
+        db.execute("INSERT INTO analyses VALUES ('old', 'old.pdf', '2026-01-01T00:00:00+00:00',"
+                   " ?, ?, '[]', NULL)", (raw_json("baseline"), raw_json("baseline")))
+    assert storage.fetch_analysis("old", db_path)["extraction_issues"] == []

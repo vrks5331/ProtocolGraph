@@ -1,13 +1,10 @@
-"""Ingestion-only models: the Gemini response schema and the storage record."""
+"""Ingestion-only models: the Gemini response schema and the pipeline result."""
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field
 
-from pydantic import BaseModel, ConfigDict
-
-from ..contracts import EdgeType, NodeType
+from ..contracts import EdgeType, ExtractionIssue, GraphPayload, NodeType
 
 # The only (source type, target type) pair each edge type may connect.
 EDGE_SIGNATURES: dict[str, tuple[str, str]] = {
@@ -63,30 +60,9 @@ class ExtractedGraph(BaseModel):
     edges: list[ExtractedEdge]
 
 
-IssueAction = Literal[
-    "dropped_node",
-    "dropped_edge",
-    "merged_edge",
-    "stripped_field",
-    "corrected_page",
-    "fuzzy_match",
-    "adjusted_day",
-]
+class ExtractionResult(BaseModel):
+    """The checked graph plus what is needed to audit how it was produced."""
 
-
-class ConsistencyIssue(BaseModel):
-    rule: str
-    action: IssueAction
-    item_id: str
-    message: str
-
-
-class StorageRecord(BaseModel):
-    """One analysis, with every JSON column already serialized for SQLite."""
-
-    pdf_filename: str
-    created_at: datetime
-    ext_json: str
-    graph_json: str
-    findings_json: str
-    issues_json: str
+    graph: GraphPayload
+    raw_json: str
+    issues: list[ExtractionIssue] = Field(default_factory=list)
