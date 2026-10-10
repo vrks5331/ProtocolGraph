@@ -1,0 +1,13 @@
+{
+  "nodes": [
+    {"id":"age_synopsis","type":"eligibility","field":"minimum_age","value":18,"label":"Minimum age in synopsis","page":1,"source_text":"Participants must be at least 18 years old."},
+    {"id":"age_eligibility","type":"eligibility","field":"minimum_age","value":21,"label":"Minimum age in eligibility","page":2,"source_text":"Inclusion: age 21 years or older."},
+    {"id":"endpoint_response","type":"endpoint","label":"Tumor response assessment","required_day":42,"page":2,"source_text":"Tumor response will be assessed on study day 42."},
+    {"id":"ct_scan","type":"procedure","label":"CT imaging","page":3,"source_text":"CT imaging is scheduled only at baseline."},
+    {"id":"visit_baseline","type":"visit","label":"Baseline visit","day":0,"window_before_days":0,"window_after_days":0,"page":3,"source_text":"Baseline visit (day 0)."}
+  ],
+  "edges": [
+    {"source":"endpoint_response","target":"ct_scan","type":"MEASURED_BY"},
+    {"source":"ct_scan","target":"visit_baseline","type":"SCHEDULED_AT"}
+  ]
+}
