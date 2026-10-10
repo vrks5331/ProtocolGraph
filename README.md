@@ -51,6 +51,7 @@ GEMINI_API_KEY=your-key
 | --- | --- | --- |
 | `GEMINI_API_KEY` | none (required for `/analyze`) | Gemini API key |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Gemini model used for extraction |
+| `FRONTEND_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Comma-separated origins allowed to call the API from a browser |
 | `PROTOCOLGRAPH_DB_PATH` | `~/.protocolgraph/analyses.sqlite3` | SQLite file; uploaded PDFs are stored in a `pdfs/` folder beside it |
 
 The backend uses the operating system's certificate store (via `truststore`),
@@ -72,7 +73,8 @@ If `pip` fails with `CERTIFICATE_VERIFY_FAILED`, install with
 python -m pytest
 ```
 
-Tests use a fake Gemini client and never call the network.
+Tests use a fake Gemini client and never call the network. GitHub Actions runs
+them on every pull request and on pushes to `main`.
 
 ## Branches
 

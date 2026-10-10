@@ -55,6 +55,13 @@ def test_creation_empty_history_and_docs(client):
     assert api.get("/openapi.json").status_code == 200
 
 
+@pytest.mark.parametrize("origin, allowed", [
+    ("http://localhost:5173", True), ("https://evil.example", False)])
+def test_cors_allows_only_frontend_origins(client, origin, allowed):
+    response = client[0].get("/history", headers={"Origin": origin})
+    assert (response.headers.get("access-control-allow-origin") == origin) is allowed
+
+
 @pytest.mark.parametrize("name", ["baseline", "injected"])
 def test_analyze_and_exact_retrieval(client, name):
     api, db_path = client

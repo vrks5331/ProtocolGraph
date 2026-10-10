@@ -6,6 +6,7 @@ from typing import Callable
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 import truststore
@@ -32,6 +33,15 @@ truststore.inject_into_ssl()
 app = FastAPI(title="ProtocolGraph graph engine")
 logger = logging.getLogger(__name__)
 MAX_PDF_BYTES = 20 * 1024 * 1024
+DEFAULT_FRONTEND_ORIGINS = "http://localhost:5173,http://localhost:3000"
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in os.environ.get(
+        "FRONTEND_ORIGINS", DEFAULT_FRONTEND_ORIGINS).split(",") if origin.strip()],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 
 def extract_with_gemini(pdf_bytes: bytes) -> ExtractionResult:
