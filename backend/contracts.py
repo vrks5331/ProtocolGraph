@@ -174,6 +174,8 @@ class AnalysisSummary(BaseModel):
 
 class AnalysisResponse(BaseModel):
     analysis_id: str
+    filename: str | None = None
+    created_at: datetime | None = None
     graph: GraphPayload
     findings: list[Finding] = Field(default_factory=list)
     extraction_issues: list[ExtractionIssue] = Field(default_factory=list)
@@ -181,6 +183,22 @@ class AnalysisResponse(BaseModel):
 
 class HistoryResponse(BaseModel):
     analyses: list[AnalysisSummary] = Field(default_factory=list)
+
+
+class JargonTerm(BaseModel):
+    term: Annotated[str, Field(min_length=1)]
+    meaning: Annotated[str, Field(min_length=1)]
+
+
+class ConceptExplanation(BaseModel):
+    """Plain-language rewrite of one concept for readers without medical training."""
+
+    summary: Annotated[str, Field(min_length=1)]
+    terms: list[JargonTerm] = Field(default_factory=list)
+
+
+class ExplanationResponse(ConceptExplanation):
+    item_id: str
 
 
 class ErrorResponse(BaseModel):
