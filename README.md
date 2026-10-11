@@ -23,6 +23,7 @@ the frontend. Change it only through team agreement.
 | `backend/simulator.py` | What-if schedule changes |
 | `backend/storage.py` | SQLite persistence and stored PDFs |
 | `backend/main.py` | FastAPI app |
+| `frontend/` | React + TypeScript + Vite workspace (React Flow graph view) |
 
 ## API
 
@@ -67,14 +68,33 @@ python -m uvicorn backend.main:app --reload
 If `pip` fails with `CERTIFICATE_VERIFY_FAILED`, install with
 `uv pip install --native-tls -r requirements.txt` instead.
 
+## Run the frontend
+
+```powershell
+cd frontend
+npm.cmd install
+npm.cmd run dev
+```
+
+Open http://127.0.0.1:5173. The frontend currently runs on the sample graphs in
+`data/` and does not call the backend yet; see
+[frontend/README.md](frontend/README.md). If `npm install` fails with a
+certificate error or "Exit handler never called", set `NODE_USE_SYSTEM_CA=1`
+first so Node uses the operating system's certificate store.
+
 ## Run tests
 
 ```powershell
 python -m pytest
+cd frontend
+npm.cmd test
+npm.cmd run format:check
 ```
 
-Tests use a fake Gemini client and never call the network. GitHub Actions runs
-them on every pull request and on pushes to `main`.
+Backend tests use a fake Gemini client and never call the network. GitHub
+Actions runs the backend tests and the frontend format check, tests, and build
+on every pull request and on pushes to `main`. Run `npm.cmd run format` in
+`frontend/` before committing frontend changes.
 
 ## Branches
 
