@@ -417,6 +417,32 @@ select {
   gap: var(--space-2);
   align-items: center;
 }
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.segmented button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 0;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.segmented button + button {
+  border-left: 1px solid var(--border);
+}
+.segmented button:hover {
+  color: var(--text);
+}
+.segmented button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
 .view-toggle {
   font-size: var(--text-xs);
   padding: 7px 9px;
@@ -432,6 +458,34 @@ select {
 .cy-container {
   position: absolute;
   inset: 0;
+}
+.graph-tooltip {
+  position: absolute;
+  z-index: 5;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px #0006;
+  pointer-events: none;
+}
+.graph-tooltip .eyebrow i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.graph-tooltip strong {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1.5;
+}
+.graph-tooltip small,
+.graph-tooltip p {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  line-height: 1.55;
 }
 .canvas-controls {
   position: absolute;
@@ -1002,6 +1056,12 @@ dd {
 .graph-footer {
   flex-wrap: wrap;
 }
+.graph-footer .type-dot {
+  border: 0;
+  border-radius: 50%;
+  width: 8px;
+  height: 8px;
+}
 .graph-footer .fuzzy-key {
   border-style: dashed;
 }
@@ -1053,9 +1113,6 @@ dialog::backdrop {
   font-size: 13px;
   margin: var(--space-3) 0 var(--space-6);
 }
-.mobile-inspector-toggle {
-  display: none;
-}
 .inspector-type,
 .summary-scope,
 .finding-meta,
@@ -1078,23 +1135,15 @@ dialog::backdrop {
 }
 @media (min-width: 1001px) {
   .graph-canvas {
-    height: clamp(300px, calc(100dvh - 480px), 440px);
+    height: clamp(380px, calc(100dvh - 420px), 560px);
   }
   .inspector {
     max-height: calc(100dvh - 210px);
   }
 }
-@media (max-width: 1000px) {
-  .desktop-inspector-toggle {
-    display: none;
-  }
-  .mobile-inspector-toggle {
-    display: inline-grid;
-  }
-}
 @media (min-width: 1600px) {
   .graph-canvas {
-    height: 500px;
+    height: 640px;
   }
 }
 @media (max-width: 1200px) {
@@ -1289,7 +1338,8 @@ dialog::backdrop {
   .canvas-container {
     display: none;
   }
-  .view-toggle {
+  .view-toggle,
+  .segmented {
     display: none;
   }
   .concept-list {

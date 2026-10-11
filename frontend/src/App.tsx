@@ -10,15 +10,15 @@ import {
   List,
   LoaderCircle,
   Network,
-  PanelRightClose,
-  PanelRightOpen,
+  Share2,
   SlidersHorizontal,
   Upload,
+  Workflow,
 } from 'lucide-react';
 import { API_BASE_URL, ApiError, formatDate, getAnalysis, listHistory, pdfUrl } from './lib/api';
 import { TYPE_COLORS, edgeId, fuzzyMatchedNodes, humanize, relatedNodes } from './lib/graphUtils';
 import type { AnalysisResponse, AnalysisSummary, NodeType, Selection } from './lib/types';
-import ProtocolCanvas from './components/ProtocolCanvas';
+import ProtocolCanvas, { type GraphLayout } from './components/ProtocolCanvas';
 import Findings from './components/Findings';
 import Inspector from './components/Inspector';
 import UploadDialog from './components/UploadDialog';
@@ -38,14 +38,11 @@ const headings: Record<View, [string, string]> = {
   History: ['Protocol library', 'Every analyzed protocol is saved here.'],
 };
 
+const LAYOUT_KEY = 'protocolgraph.graphLayout';
+
 function readHash(): string | null {
   const match = window.location.hash.match(/^#\/analysis\/([^/]+)$/);
   return match ? decodeURIComponent(match[1]) : null;
-}
-
-function defaultSelection(analysis: AnalysisResponse): Selection {
-  const first = analysis.findings[0];
-  return first ? { kind: 'finding', id: first.id } : null;
 }
 
 function errorText(error: unknown) {
@@ -62,11 +59,12 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
-  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const [listMode, setListMode] = useState(false);
   const [focusRequest, setFocusRequest] = useState(0);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [graphLayout, setGraphLayout] = useState<GraphLayout>(() =>
+    localStorage.getItem(LAYOUT_KEY) === 'flow' ? 'flow' : 'web',
+  );
   const analysisRef = useRef(analysis);
   analysisRef.current = analysis;
 
@@ -108,7 +106,7 @@ export default function App() {
         if (cancelled) return;
         setLoading(false);
         setAnalysis(loaded);
-        setSelection(defaultSelection(loaded));
+        setSelection(null);
         setFocusRequest(0);
       })
       .catch((error) => {
@@ -128,7 +126,7 @@ export default function App() {
 
   useEffect(() => {
     function onEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !uploadOpen) setMobileInspectorOpen(false);
+      if (event.key === 'Escape' && !uploadOpen) setSelection(null);
     }
     window.addEventListener('keydown', onEscape);
     return () => window.removeEventListener('keydown', onEscape);
@@ -148,11 +146,10 @@ export default function App() {
     window.location.hash = `#/analysis/${encodeURIComponent(id)}`;
     setAnalysisId(id);
     setView('Overview');
-    setMobileInspectorOpen(false);
   }
   function handleUploaded(result: AnalysisResponse) {
     setAnalysis(result);
-    setSelection(defaultSelection(result));
+    setSelection(null);
     setFocusRequest(0);
     setLoadError(null);
     window.location.hash = `#/analysis/${encodeURIComponent(result.analysis_id)}`;
@@ -161,12 +158,10 @@ export default function App() {
     setUploadOpen(false);
     void refreshHistory();
   }
-  function select(next: Selection) {
-    setSelection(next);
-    if (next) {
-      setInspectorOpen(true);
-      setMobileInspectorOpen(true);
-    }
+  const select = setSelection;
+  function chooseLayout(next: GraphLayout) {
+    setGraphLayout(next);
+    localStorage.setItem(LAYOUT_KEY, next);
   }
   function selectFinding(next: Selection) {
     select(next);
@@ -175,17 +170,13 @@ export default function App() {
       setFocusRequest((value) => value + 1);
     }
   }
-  function toggleInspector() {
-    setInspectorOpen((open) => !open);
-    setMobileInspectorOpen((open) => !open);
-  }
   function navigate(next: View) {
     setView(next);
-    setMobileInspectorOpen(false);
+    setSelection(null);
   }
 
   const reviewView = view === 'Overview' || view === 'Graph Explorer';
-  const showInspector = reviewView && analysis !== null && inspectorOpen;
+  const showInspector = reviewView && analysis !== null && selection !== null;
   const issues = analysis?.extraction_issues ?? [];
   const droppedCount = issues.filter((issue) => issue.action.startsWith('dropped')).length;
   const [title, subtitle] = headings[view];
@@ -252,6 +243,26 @@ export default function App() {
               <p>Extracted concepts and relationships</p>
             </div>
             <div className="panel-actions">
+              {!listMode && (
+                <div className="segmented" role="group" aria-label="Graph layout">
+                  {(
+                    [
+                      ['web', 'Web', Share2],
+                      ['flow', 'Flow', Workflow],
+                    ] as const
+                  ).map(([value, label, Icon]) => (
+                    <button
+                      key={value}
+                      aria-pressed={graphLayout === value}
+                      className={graphLayout === value ? 'active' : ''}
+                      onClick={() => chooseLayout(value)}
+                    >
+                      <Icon size={14} />
+                      <span>{label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <button
                 className="secondary-button view-toggle"
                 onClick={() => setListMode(!listMode)}
@@ -260,31 +271,12 @@ export default function App() {
                 {listMode ? <Network size={15} /> : <List size={15} />}
                 <span>{listMode ? 'Graph view' : 'Text view'}</span>
               </button>
-              <button
-                className="icon-button inspector-toggle desktop-inspector-toggle"
-                aria-label={
-                  inspectorOpen ? 'Collapse evidence inspector' : 'Expand evidence inspector'
-                }
-                aria-expanded={inspectorOpen}
-                onClick={toggleInspector}
-              >
-                {inspectorOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
-              </button>
-              <button
-                className="icon-button mobile-inspector-toggle"
-                aria-label="Open evidence inspector"
-                onClick={() => {
-                  setInspectorOpen(true);
-                  setMobileInspectorOpen(true);
-                }}
-              >
-                <PanelRightOpen size={18} />
-              </button>
             </div>
           </div>
           <div className={listMode ? 'canvas-container hidden' : 'canvas-container'}>
             <ProtocolCanvas
               graph={graph}
+              layout={graphLayout}
               selection={selection}
               highlighted={highlighted}
               fuzzy={fuzzy}
@@ -317,7 +309,7 @@ export default function App() {
           <div className="graph-footer">
             {presentTypes.map((type) => (
               <span key={type}>
-                <i style={{ borderColor: TYPE_COLORS[type] }} /> {type}
+                <i className="type-dot" style={{ background: TYPE_COLORS[type] }} /> {type}
               </span>
             ))}
             <span>
@@ -328,7 +320,9 @@ export default function App() {
                 <i className="fuzzy-key" /> Approximate source match
               </span>
             )}
-            <span className="graph-help">Scroll to zoom · Drag to pan · Select to inspect</span>
+            <span className="graph-help">
+              Hover for details · Click to inspect · Scroll to zoom
+            </span>
           </div>
         </section>
         <section className="findings-panel" aria-label="Findings review queue">
@@ -479,11 +473,8 @@ export default function App() {
                 selection={selection}
                 onSelect={select}
                 onGraph={() => setView('Graph Explorer')}
-                mobileOpen={mobileInspectorOpen}
-                onClose={() => {
-                  setInspectorOpen(false);
-                  setMobileInspectorOpen(false);
-                }}
+                mobileOpen
+                onClose={() => setSelection(null)}
               />
             )}
           </div>

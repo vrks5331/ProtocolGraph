@@ -7,8 +7,8 @@ import type { AnalysisResponse, AnalysisSummary } from './lib/types';
 import { jsonResponse, sampleAnalysis } from './test/fixtures';
 
 vi.mock('./components/ProtocolCanvas', () => ({
-  default: ({ highlighted }: { highlighted: string[] }) => (
-    <div data-testid="canvas" data-highlighted={highlighted.join(',')}>
+  default: ({ highlighted, layout }: { highlighted: string[]; layout: string }) => (
+    <div data-testid="canvas" data-highlighted={highlighted.join(',')} data-layout={layout}>
       Protocol canvas
     </div>
   ),
@@ -60,6 +60,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   window.location.hash = '';
+  localStorage.clear();
 });
 afterEach(() => {
   cleanup();
@@ -148,7 +149,12 @@ describe('ProtocolGraph app', () => {
     mockApi();
     render(<App />);
     const canvas = await screen.findByTestId('canvas');
-    expect(canvas.getAttribute('data-highlighted')).toBe('age_synopsis,age_eligibility');
+    expect(canvas.getAttribute('data-highlighted')).toBe('');
+    expect(screen.queryByRole('complementary')).toBeNull();
+    await user.click(screen.getByRole('button', { name: /Conflicting values for minimum_age/ }));
+    expect(screen.getByTestId('canvas').getAttribute('data-highlighted')).toBe(
+      'age_synopsis,age_eligibility',
+    );
     const inspector = screen.getByRole('complementary', { name: 'Evidence inspector' });
     expect(within(inspector).getByText(/different values for minimum age \(18, 21\)/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: /No linked assessment scheduled/ }));
@@ -160,6 +166,8 @@ describe('ProtocolGraph app', () => {
     await user.click(within(inspector).getByRole('button', { name: 'Inspect CT imaging' }));
     expect(within(inspector).getByText('ct_scan')).toBeTruthy();
     expect(within(inspector).getByText('Quote matched the page approximately.')).toBeTruthy();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('complementary')).toBeNull();
   });
 
   it('explains a concept in plain English on request', async () => {
@@ -224,6 +232,20 @@ describe('ProtocolGraph app', () => {
     expect(within(inspector).getByText('Relationship details')).toBeTruthy();
     expect(within(inspector).getByText('If measurable disease')).toBeTruthy();
     expect(within(inspector).getByText('Yes')).toBeTruthy();
+  });
+
+  it('switches between web and flow layouts and remembers the choice', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/analysis/a1';
+    mockApi();
+    const { unmount } = render(<App />);
+    expect((await screen.findByTestId('canvas')).getAttribute('data-layout')).toBe('web');
+    await user.click(screen.getByRole('button', { name: 'Flow' }));
+    expect(screen.getByTestId('canvas').getAttribute('data-layout')).toBe('flow');
+    expect(screen.getByRole('button', { name: 'Flow' }).getAttribute('aria-pressed')).toBe('true');
+    unmount();
+    render(<App />);
+    expect((await screen.findByTestId('canvas')).getAttribute('data-layout')).toBe('flow');
   });
 
   it('reports a missing analysis from the URL', async () => {
