@@ -23,6 +23,10 @@ export interface Relationship {
   target: string;
   type: EdgeType;
   confidence?: number | null;
+  required?: boolean | null;
+  condition_text?: string | null;
+  arm_ids?: string[] | null;
+  pop_ids?: string[] | null;
   [key: string]: unknown;
 }
 export interface GraphPayload {
@@ -42,25 +46,46 @@ export interface Finding {
   tier: string;
   evidence: Evidence[];
 }
+export type ExtractionAction =
+  | 'dropped_node'
+  | 'dropped_edge'
+  | 'merged_edge'
+  | 'stripped_field'
+  | 'corrected_page'
+  | 'fuzzy_match';
+export interface ExtractionIssue {
+  rule: string;
+  action: ExtractionAction;
+  item_id: string;
+  message: string;
+}
 export interface AnalysisResponse {
   analysis_id: string;
+  filename?: string | null;
+  created_at?: string | null;
   graph: GraphPayload;
   findings: Finding[];
+  extraction_issues?: ExtractionIssue[];
+}
+export interface AnalysisSummary {
+  analysis_id: string;
+  filename: string;
+  created_at: string;
 }
 export interface HistoryResponse {
-  analyses: { analysis_id: string; filename: string; created_at: string }[];
+  analyses: AnalysisSummary[];
 }
-export type DatasetId = 'baseline' | 'injected';
+export interface JargonTerm {
+  term: string;
+  meaning: string;
+}
+export interface ExplanationResponse {
+  item_id: string;
+  summary: string;
+  terms: JargonTerm[];
+}
 export type Selection =
   | { kind: 'node'; id: string }
   | { kind: 'finding'; id: string }
-  | { kind: 'edge'; index: number }
+  | { kind: 'edge'; id: string }
   | null;
-export type ScheduleField = 'required_day' | 'day' | 'window_before_days' | 'window_after_days';
-export interface SimulationResult {
-  changed_node: string;
-  affected_nodes: string[];
-  new_issues: Finding[];
-  resolved_issues: Finding[];
-  remaining_issues: Finding[];
-}

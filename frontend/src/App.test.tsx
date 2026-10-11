@@ -1,8 +1,11 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
-import { analysisAdapter } from './lib/analysisAdapter';
+import { API_BASE_URL } from './lib/api';
+import type { AnalysisResponse, AnalysisSummary } from './lib/types';
+import { jsonResponse, sampleAnalysis } from './test/fixtures';
+
 vi.mock('./components/ProtocolCanvas', () => ({
   default: ({ highlighted }: { highlighted: string[] }) => (
     <div data-testid="canvas" data-highlighted={highlighted.join(',')}>
@@ -10,6 +13,43 @@ vi.mock('./components/ProtocolCanvas', () => ({
     </div>
   ),
 }));
+
+const summary: AnalysisSummary = {
+  analysis_id: 'a1',
+  filename: 'NCT-sample.pdf',
+  created_at: '2026-10-10T15:30:00+00:00',
+};
+
+function mockApi({
+  history = [] as AnalysisSummary[],
+  analysis = sampleAnalysis() as AnalysisResponse,
+  analyze = () => Promise.resolve(jsonResponse(analysis)),
+} = {}) {
+  const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+    const path = url.replace(API_BASE_URL, '');
+    if (path === '/history') return jsonResponse({ analyses: history });
+    if (path.endsWith('/explain')) {
+      return jsonResponse({
+        item_id: path.split('/')[4],
+        summary: 'Participants get a CT scan before treatment starts.',
+        terms: [{ term: 'CT', meaning: 'Computed tomography, a detailed X-ray scan.' }],
+      });
+    }
+    if (path.startsWith('/graph/')) return jsonResponse(analysis);
+    if (path === '/analyze') return analyze();
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+const calls = (fetchMock: ReturnType<typeof mockApi>, path: string) =>
+  fetchMock.mock.calls.filter(([url]) => url === `${API_BASE_URL}${path}`);
+
+function pdf(name = 'protocol.pdf') {
+  return new File(['%PDF-1.7'], name, { type: 'application/pdf' });
+}
+
 beforeAll(() => {
   HTMLDialogElement.prototype.showModal = function () {
     this.setAttribute('open', '');
@@ -18,128 +58,193 @@ beforeAll(() => {
     this.removeAttribute('open');
   };
 });
-afterEach(cleanup);
-
-describe('canonical mock adapter', () => {
-  it('uses source fixtures and returns isolated data', () => {
-    const baseline = analysisAdapter.getAnalysis('baseline');
-    expect(baseline.graph.nodes).toHaveLength(5);
-    expect(baseline.graph.edges).toHaveLength(2);
-    expect(baseline.findings).toEqual([]);
-    const injected = analysisAdapter.getAnalysis('injected');
-    expect(injected.findings.map((finding) => finding.check_id)).toEqual([
-      'eligibility_conflict',
-      'missing_assessment',
-    ]);
-    expect(injected.findings[0].evidence.map((evidence) => evidence.page)).toEqual([1, 2]);
-    injected.graph.nodes[0].value = 99;
-    expect(analysisAdapter.getAnalysis('injected').graph.nodes[0].value).toBe(18);
-  });
-  it('compares new, resolved, and remaining findings without changing source graphs', () => {
-    const injected = analysisAdapter.getAnalysis('injected');
-    const original = structuredClone(injected);
-    const result = analysisAdapter.simulate(injected, 'visit_baseline', { day: 42 });
-    expect(result.resolved_issues.map((f) => f.check_id)).toEqual(['missing_assessment']);
-    expect(result.remaining_issues.map((f) => f.check_id)).toEqual(['eligibility_conflict']);
-    expect(result.new_issues).toEqual([]);
-    expect(result.affected_nodes).toEqual(['ct_scan', 'endpoint_response']);
-    expect(injected).toEqual(original);
-    const baseline = analysisAdapter.getAnalysis('baseline');
-    expect(
-      analysisAdapter.simulate(baseline, 'endpoint_response', { required_day: 70 }).new_issues[0]
-        .check_id,
-    ).toBe('missing_assessment');
-    expect(
-      analysisAdapter.simulate(baseline, 'visit_day42', { day: 40, window_after_days: 2 })
-        .new_issues,
-    ).toEqual([]);
-    expect(() => analysisAdapter.simulate(baseline, 'visit_day42', { day: -1 })).toThrow();
-  });
+beforeEach(() => {
+  window.location.hash = '';
+});
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
 });
 
-describe('review workflow', () => {
-  it('opens injected issues with meaningful evidence, and switches to baseline', async () => {
-    const user = userEvent.setup();
+describe('ProtocolGraph app', () => {
+  it('starts empty with an upload prompt when no analysis is open', async () => {
+    mockApi();
     render(<App />);
-    expect((screen.getByLabelText('Protocol dataset') as HTMLSelectElement).value).toBe('injected');
-    expect(screen.getByText('Review needed')).toBeTruthy();
-    const inspector = screen.getByRole('complementary', { name: 'Evidence inspector' });
-    expect(within(inspector).getByText(/Minimum age is 18/)).toBeTruthy();
-    expect(within(inspector).getByText('Protocol · Page 2')).toBeTruthy();
-    await user.selectOptions(screen.getByLabelText('Protocol dataset'), 'baseline');
-    expect(screen.getByText('No issues detected in demo rules')).toBeTruthy();
-    expect(screen.queryByText('Review needed')).toBeNull();
-    expect(within(inspector).getByText(/Tumor response will be assessed/)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Upload a protocol to get started' })).toBeTruthy();
+    expect(screen.queryByTestId('canvas')).toBeNull();
+    expect(screen.getByText('No protocol open')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('Local workspace')).toBeTruthy());
   });
-  it('traces a missing assessment to connected concepts and source evidence', async () => {
+
+  it('uploads a protocol, opens its graph, and refreshes history', async () => {
     const user = userEvent.setup();
+    const fetchMock = mockApi();
+    render(<App />);
+    await user.click(screen.getAllByRole('button', { name: /Upload protocol/ })[0]);
+    const dialog = screen.getByRole('dialog');
+    await user.upload(within(dialog).getByLabelText('Protocol PDF'), pdf());
+    await user.click(within(dialog).getByRole('button', { name: /Analyze protocol/ }));
+    expect(await screen.findByTestId('canvas')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Graph explorer' })).toBeTruthy();
+    expect(screen.getAllByText('NCT-sample.pdf').length).toBeGreaterThan(0);
+    expect(screen.getByText('Review needed')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(window.location.hash).toBe('#/analysis/a1');
+    const [, init] = calls(fetchMock, '/analyze')[0];
+    expect(init!.method).toBe('POST');
+    await waitFor(() => expect(calls(fetchMock, '/history')).toHaveLength(2));
+  });
+
+  it('shows the backend detail when extraction fails', async () => {
+    const user = userEvent.setup();
+    mockApi({
+      analyze: () =>
+        Promise.resolve(jsonResponse({ detail: 'Extraction produced no usable nodes' }, 422)),
+    });
+    render(<App />);
+    await user.click(screen.getAllByRole('button', { name: /Upload protocol/ })[0]);
+    const dialog = screen.getByRole('dialog');
+    await user.upload(within(dialog).getByLabelText('Protocol PDF'), pdf());
+    await user.click(within(dialog).getByRole('button', { name: /Analyze protocol/ }));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe(
+      'Extraction produced no usable nodes',
+    );
+    expect(screen.queryByTestId('canvas')).toBeNull();
+  });
+
+  it('rejects files over the size limit before uploading', async () => {
+    const user = userEvent.setup();
+    const fetchMock = mockApi();
+    render(<App />);
+    await user.click(screen.getAllByRole('button', { name: /Upload protocol/ })[0]);
+    const dialog = screen.getByRole('dialog');
+    const large = pdf('large.pdf');
+    Object.defineProperty(large, 'size', { value: 21 * 1024 * 1024 });
+    await user.upload(within(dialog).getByLabelText('Protocol PDF'), large);
+    expect(within(dialog).getByRole('alert').textContent).toMatch(/20 MB/);
+    expect(
+      (within(dialog).getByRole('button', { name: /Analyze protocol/ }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(calls(fetchMock, '/analyze')).toHaveLength(0);
+  });
+
+  it('lists history and opens a saved analysis', async () => {
+    const user = userEvent.setup();
+    const fetchMock = mockApi({ history: [summary] });
     render(<App />);
     await user.click(
-      screen.getByRole('button', { name: /Missing assessment Response assessment/ }),
+      within(screen.getByRole('navigation')).getByRole('button', { name: 'History' }),
     );
+    await user.click(await screen.findByRole('button', { name: /NCT-sample\.pdf Analyzed/ }));
+    expect(await screen.findByTestId('canvas')).toBeTruthy();
+    expect(calls(fetchMock, '/graph/a1')).toHaveLength(1);
+    expect(window.location.hash).toBe('#/analysis/a1');
+  });
+
+  it('highlights finding context, including the missing assessment path', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/analysis/a1';
+    mockApi();
+    render(<App />);
+    const canvas = await screen.findByTestId('canvas');
+    expect(canvas.getAttribute('data-highlighted')).toBe('age_synopsis,age_eligibility');
+    const inspector = screen.getByRole('complementary', { name: 'Evidence inspector' });
+    expect(within(inspector).getByText(/different values for minimum age \(18, 21\)/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /No linked assessment scheduled/ }));
     expect(screen.getByTestId('canvas').getAttribute('data-highlighted')).toBe(
       'endpoint_response,ct_scan,visit_baseline',
     );
-    const inspector = screen.getByRole('complementary');
-    expect(within(inspector).getByText(/CT imaging is scheduled only at baseline/)).toBeTruthy();
+    const [link] = within(inspector).getAllByRole('link', { name: /Open page 3 in PDF/ });
+    expect(link.getAttribute('href')).toBe(`${API_BASE_URL}/graph/a1/pdf#page=3`);
     await user.click(within(inspector).getByRole('button', { name: 'Inspect CT imaging' }));
     expect(within(inspector).getByText('ct_scan')).toBeTruthy();
-    expect(within(inspector).getByText('Protocol · Page 3')).toBeTruthy();
+    expect(within(inspector).getByText('Quote matched the page approximately.')).toBeTruthy();
   });
-  it('collapses and reopens evidence, selects concepts, and navigates history', async () => {
+
+  it('explains a concept in plain English on request', async () => {
     const user = userEvent.setup();
+    window.location.hash = '#/analysis/a1';
+    const fetchMock = mockApi();
     render(<App />);
-    await user.click(screen.getByRole('button', { name: 'Collapse evidence inspector' }));
-    expect(screen.queryByRole('complementary')).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Expand evidence inspector' }));
-    expect(screen.getByRole('complementary')).toBeTruthy();
+    await screen.findByTestId('canvas');
+    await user.click(screen.getByRole('button', { name: 'Text view' }));
+    await user.click(screen.getByRole('button', { name: /procedure CT imaging Page 3/ }));
+    const inspector = screen.getByRole('complementary', { name: 'Evidence inspector' });
+    expect(
+      within(inspector).getByText(/A procedure is something done to participants/),
+    ).toBeTruthy();
+    await user.click(
+      within(inspector).getByRole('button', { name: /Explain this in plain English/ }),
+    );
+    expect(await within(inspector).findByText(/CT scan before treatment/)).toBeTruthy();
+    expect(within(inspector).getByText('Computed tomography, a detailed X-ray scan.')).toBeTruthy();
+    const [, init] = calls(fetchMock, '/graph/a1/nodes/ct_scan/explain')[0];
+    expect(init!.method).toBe('POST');
+  });
+
+  it('describes connections in plain language and explains them on request', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/analysis/a1';
+    const fetchMock = mockApi();
+    render(<App />);
+    await screen.findByTestId('canvas');
+    await user.click(screen.getByRole('button', { name: 'Text view' }));
+    await user.click(screen.getByRole('button', { name: /procedure CT imaging Page 3/ }));
+    const inspector = screen.getByRole('complementary', { name: 'Evidence inspector' });
+    expect(
+      within(inspector).getByText(
+        'Tumor response assessment is measured using CT imaging. The protocol says this is mandatory. Only when: If measurable disease.',
+      ),
+    ).toBeTruthy();
+    expect(within(inspector).getByText('CT imaging is done at Baseline visit.')).toBeTruthy();
+    await user.click(
+      within(inspector).getAllByRole('button', { name: 'Explain this connection' })[0],
+    );
+    await user.click(
+      within(inspector).getByRole('button', { name: /Explain this connection in plain English/ }),
+    );
+    expect(await within(inspector).findByText(/CT scan before treatment/)).toBeTruthy();
+    expect(
+      calls(fetchMock, '/graph/a1/edges/endpoint_response__MEASURED_BY__ct_scan/explain'),
+    ).toHaveLength(1);
+  });
+
+  it('shows relationship details from the text view', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/analysis/a1';
+    mockApi();
+    render(<App />);
+    await screen.findByTestId('canvas');
     await user.click(screen.getByRole('button', { name: 'Text view' }));
     await user.click(
-      screen.getByRole('button', { name: /eligibility Minimum age in synopsis Page 1/ }),
+      screen.getByRole('button', { name: /Tumor response assessment MEASURED BY CT imaging/ }),
     );
-    expect(
-      within(screen.getByRole('complementary')).getByText(/Participants must be at least 18/),
-    ).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'History' }));
-    expect(screen.getByText('Demo history')).toBeTruthy();
-    await user.click(
-      screen.getByRole('button', { name: /Baseline protocol Consistent eligibility/ }),
-    );
-    expect(screen.getByText('No issues detected in demo rules')).toBeTruthy();
+    const inspector = screen.getByRole('complementary', { name: 'Evidence inspector' });
+    expect(within(inspector).getByText('Relationship details')).toBeTruthy();
+    expect(within(inspector).getByText('If measurable disease')).toBeTruthy();
+    expect(within(inspector).getByText('Yes')).toBeTruthy();
   });
-  it('selects schedule fields, resolves assessment issues, and resets local preview', async () => {
+
+  it('reports a missing analysis from the URL', async () => {
+    window.location.hash = '#/analysis/gone';
+    const fetchMock = mockApi();
+    fetchMock.mockImplementation(async (url: string) =>
+      url.endsWith('/history')
+        ? jsonResponse({ analyses: [] })
+        : jsonResponse({ detail: 'Analysis not found' }, 404),
+    );
+    render(<App />);
+    expect(await screen.findByText(/This analysis no longer exists/)).toBeTruthy();
+  });
+
+  it('keeps Simulate as a placeholder tab', async () => {
     const user = userEvent.setup();
+    mockApi();
     render(<App />);
     await user.click(
       within(screen.getByRole('navigation')).getByRole('button', { name: 'Simulate' }),
     );
-    await user.selectOptions(screen.getByLabelText('Concept to edit'), 'visit_baseline');
-    const day = screen.getByLabelText('Scheduled study day');
-    await user.clear(day);
-    await user.type(day, '42');
-    await user.click(screen.getByRole('button', { name: 'Run simulation' }));
-    expect(screen.getByRole('heading', { name: 'Resolved 1' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Remaining 1' })).toBeTruthy();
-    expect(
-      analysisAdapter.getGraph('injected').nodes.find((n) => n.id === 'visit_baseline')?.day,
-    ).toBe(0);
-    await user.click(screen.getByRole('button', { name: 'Reset' }));
-    expect((day as HTMLInputElement).value).toBe('0');
-    expect(screen.queryByText('Comparison with original')).toBeNull();
-    await user.clear(day);
-    expect(
-      (screen.getByRole('button', { name: 'Run simulation' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-    await user.selectOptions(screen.getByLabelText('Protocol dataset'), 'baseline');
-    expect((screen.getByLabelText('Required study day') as HTMLInputElement).value).toBe('42');
-  });
-  it('explains upload availability without processing files', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await user.click(screen.getByRole('button', { name: 'Upload protocol' }));
-    expect(screen.getByRole('dialog').hasAttribute('open')).toBe(true);
-    expect(screen.getByText(/no files are uploaded or processed/)).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: /Continue with demo data/ }));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByText('Schedule simulation is coming soon')).toBeTruthy();
   });
 });

@@ -1,44 +1,84 @@
 # ProtocolGraph frontend
 
-Local React + TypeScript + Vite workspace. No backend, API key, or database is required.
+React + TypeScript + Vite workspace for reviewing protocol analyses produced by
+the ProtocolGraph backend.
 
-```sh
+```powershell
 cd frontend
-npm install
-npm run dev
+npm.cmd install
+npm.cmd run dev
 ```
 
-Open http://127.0.0.1:5173. On Windows with PowerShell script restrictions, use `npm.cmd` instead of `npm`.
+Start the backend first (see the root [README](../README.md)), then open
+http://127.0.0.1:5173. The app starts empty; upload a protocol PDF or open a
+previous analysis from History.
 
-```sh
-npm run build
-npm test
+| Variable            | Default                 | Purpose                                        |
+| ------------------- | ----------------------- | ---------------------------------------------- |
+| `VITE_API_BASE_URL` | `http://127.0.0.1:8000` | Backend base URL, set in `frontend/.env.local` |
+
+```powershell
+npm.cmd run build
+npm.cmd test
+npm.cmd run format:check
 ```
 
-The build includes strict TypeScript checking. Vitest and Testing Library verify dataset switching, canonical findings, evidence selection, history navigation, and adapter isolation.
+`npm run build` type-checks and bundles the app.
 
-## Mock mode and integration
+## How it works
 
-The dark interface uses forest charcoal surfaces, pale emerald accents, and restrained coral/amber findings. Tokens for typography, spacing, radii, borders, and states live in `src/styles.css`. Inter is bundled locally for interface text and evidence passages; JetBrains Mono appears in graph labels, relationship labels, study days, IDs, and compact metadata. The theme uses one stylesheet with no stacked overrides.
+- **Upload** (`src/components/UploadDialog.tsx`) sends the PDF to
+  `POST /analyze`. Files over 20 MB or that aren't PDFs are rejected before
+  upload. Extraction usually takes 1-2 minutes; the dialog shows elapsed time,
+  can be cancelled, and gives up after 5 minutes. Backend errors are shown with
+  their detail (422 for unextractable PDFs, 503 when `GEMINI_API_KEY` is
+  missing).
+- **Current analysis** lives in the URL hash (`#/analysis/{id}`), so reloading
+  or sharing the link reopens it through `GET /graph/{id}`.
+- **History** (`src/components/HistoryPanel.tsx`) lists `GET /history`, newest
+  first, and opens an entry on click.
+- **Graph** (`src/components/ProtocolCanvas.tsx`) renders with Cytoscape.js and
+  a left-to-right dagre layout. Nodes are colored by type; nodes whose source
+  quote only matched approximately have a dashed border. Selecting a finding
+  highlights and zooms to its concepts. Text view lists every concept and
+  relationship and is the primary view on phones.
+- **Inspector** (`src/components/Inspector.tsx`) shows source quotes with links
+  to the page in the stored PDF (`GET /graph/{id}/pdf#page=N`), concept and
+  relationship details, and extraction notes for the selected item.
+- **Plain English** (`src/components/PlainLanguage.tsx`) explains the selected
+  concept or relationship for non-experts. A built-in note shows straight away:
+  what the concept type means, or a sentence such as "Tumor response is
+  measured using CT imaging" with any mandatory/optional/conditional
+  qualifiers (`src/lib/glossary.ts`). The same sentences appear under each
+  connected concept. The explain button asks the backend for an AI-written
+  summary and definitions of the jargon involved.
+- **Simulate** is a placeholder tab; the what-if feature is not built yet.
 
-The injected protocol is selected by default, with its eligibility evidence ready in the collapsible inspector. The complete graph is visible initially; selecting a finding focuses its related nodes and highlights the corresponding edges. Phones use the text alternative and a dismissible evidence drawer instead of a compressed canvas.
+`src/lib/api.ts` is the only module that calls the network.
+`src/lib/graphUtils.ts` derives finding context from the graph: an eligibility
+conflict highlights its evidence nodes, and a missing assessment highlights the
+endpoint plus its `MEASURED_BY` procedures and their `SCHEDULED_AT` visits.
+`src/lib/types.ts` mirrors `backend/contracts.py`.
 
-Simulate edits one selected endpoint or visit at a time: required day, scheduled day, and visit windows. The adapter compares new, resolved, and remaining findings using the two limited demo checks. No backend call or persistence occurs. Reset or switching datasets clears the preview; original graphs and source evidence remain unchanged.
+Theme tokens live in `src/styles.css`. Cytoscape styles can't read CSS
+variables, so graph colors are repeated in `ProtocolCanvas.tsx` and
+`TYPE_COLORS` in `graphUtils.ts`.
 
-The adapter imports the original `../data/baseline.json` and `../data/injected.json` directly. No duplicate fixtures are maintained. Demo findings are centralized in `src/lib/analysisAdapter.ts`; they are the two documented fixture scenarios, not a clinical rules engine. Sample history has no fabricated timestamps or uploaded filenames.
+## Tests
 
-`src/lib/types.ts` reflects the backend graph, findings, analysis, and history contracts. Replace the mock adapter with asynchronous API access when integrating, adding loading/error handling in the workspace: `POST /analyze`, `GET /graph/{analysis_id}`, and `GET /history`. Keep real timestamped history separate from demo metadata. The current upload dialog explicitly explains that PDF ingestion is unavailable; `analyzeProtocol` rejects rather than fabricating success. No application network requests are made.
-
-React Flow provides deterministic graph layout, keyboard-selectable nodes/edges, pan, zoom, and fit controls. Text view exposes every concept and relationship. On phones the text view is primary; selected evidence opens in a dismissible drawer. Desktop uses a persistent inspector.
+Vitest and Testing Library run against a stubbed `fetch` using the graph in
+`../data/injected.json` (`src/test/fixtures.ts`). The Cytoscape canvas is mocked
+in `App.test.tsx`, so real canvas interaction needs a manual check in the
+browser.
 
 ## Manual QA
 
-- At 1440px and 1280px: check navigation, graph labels, pan/zoom/fit, node and edge selection, and inspector spacing.
-- Start on Protocol with issues: exactly two findings and the eligibility conflict's source passages are visible. Select each finding to focus related concepts and relationships.
-- Return to baseline: the qualified no-issues state appears with the response endpoint selected.
-- Collapse and reopen the evidence inspector; trace a finding to a concept and its original page/quote.
-- In Simulate, move Baseline visit to day 42: the assessment finding resolves and the eligibility conflict remains. Reset restores day 0. Select an endpoint or visit and test all supported fields.
-- Check Overview, Graph Explorer, Simulate, and Demo history navigation, then the upload information dialog (Escape and Close dismiss it).
-- At 390px: inspect the concept/relationship list, open and dismiss the evidence drawer, and verify no horizontal page overflow.
-- Use Tab/Enter and check visible focus rings; enable reduced motion.
-- Verify the browser console has no errors. Automated UI tests substitute the canvas; real canvas interactions require browser QA.
+- Upload a protocol: the timer runs, the graph opens in Graph Explorer, and the
+  analysis appears in History.
+- Reload the page: the same analysis reopens from the URL.
+- Select each finding: its concepts are highlighted and the view zooms to them.
+- Click nodes and edges; check the inspector, PDF page links, and the
+  zoom/fit buttons.
+- Stop the backend: History shows an error and the sidebar shows
+  "Backend unreachable".
+- At 390px wide, use the text view and the evidence drawer.

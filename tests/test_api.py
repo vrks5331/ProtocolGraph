@@ -70,6 +70,8 @@ def test_analyze_and_exact_retrieval(client, name):
     assert response.status_code == 200
     result = AnalysisResponse.model_validate(response.json())
     assert UUID(result.analysis_id).version == 4
+    assert result.filename == "protocol.pdf"
+    assert result.created_at is not None and result.created_at.tzinfo is not None
     expected = GraphPayload.model_validate(graph_json(build_graph(payload(name))))
     assert result.graph == expected
     assert {item.check_id for item in result.findings} == (
@@ -217,3 +219,93 @@ def test_existing_database_gains_issues_column(tmp_path):
         db.execute("INSERT INTO analyses VALUES ('old', 'old.pdf', '2026-01-01T00:00:00+00:00',"
                    " ?, ?, '[]', NULL)", (raw_json("baseline"), raw_json("baseline")))
     assert storage.fetch_analysis("old", db_path)["extraction_issues"] == []
+
+
+EXPLANATION = {"summary": "The study checks tumor size on day 42.",
+               "terms": [{"term": "tumor response", "meaning": "Whether a tumor shrank."}]}
+
+
+def use_explainer(fn):
+    main.app.dependency_overrides[main.get_explainer] = lambda: fn
+
+
+def test_explanation_is_generated_once_and_cached(client):
+    api, _ = client
+    analysis_id = upload(api).json()["analysis_id"]
+    seen = []
+
+    def explainer(prompt):
+        seen.append(prompt)
+        return EXPLANATION
+    use_explainer(explainer)
+    url = f"/graph/{analysis_id}/nodes/endpoint_response/explain"
+    first = api.post(url)
+    assert first.status_code == 200
+    assert first.json() == {"item_id": "endpoint_response", **EXPLANATION}
+    assert api.post(url).json() == first.json()
+    assert len(seen) == 1
+    assert "Explain this endpoint" in seen[0]
+    assert "Tumor response will be assessed" in seen[0]
+
+
+def test_relationship_explanation_uses_both_concepts_and_its_own_cache(client):
+    api, _ = client
+    analysis_id = upload(api).json()["analysis_id"]
+    seen = []
+
+    def explainer(prompt):
+        seen.append(prompt)
+        return EXPLANATION
+    use_explainer(explainer)
+    edge_id = "endpoint_response__MEASURED_BY__ct_scan"
+    url = f"/graph/{analysis_id}/edges/{edge_id}/explain"
+    assert api.post(url).json() == {"item_id": edge_id, **EXPLANATION}
+    assert api.post(url).status_code == 200
+    assert len(seen) == 1
+    assert "measured using the procedure" in seen[0]
+    assert "Tumor response will be assessed" in seen[0]
+    assert "CT imaging" in seen[0]
+    api.post(f"/graph/{analysis_id}/nodes/ct_scan/explain")
+    assert len(seen) == 2
+    assert api.post(f"/graph/{analysis_id}/edges/missing/explain").status_code == 404
+
+
+def test_explanation_errors(client):
+    api, _ = client
+    analysis_id = upload(api).json()["analysis_id"]
+    use_explainer(lambda prompt: EXPLANATION)
+    assert api.post("/graph/unknown/nodes/x/explain").status_code == 404
+    assert api.post(f"/graph/{analysis_id}/nodes/missing/explain").status_code == 404
+
+    def broken(prompt):
+        raise RuntimeError("model overloaded")
+    use_explainer(broken)
+    response = api.post(f"/graph/{analysis_id}/nodes/ct_scan/explain")
+    assert response.status_code == 502
+    use_explainer(lambda prompt: {"summary": "", "terms": []})
+    assert api.post(f"/graph/{analysis_id}/nodes/ct_scan/explain").status_code == 502
+
+
+def test_explain_validates_model_output():
+    from backend.explainer import explain
+
+    class FakeClient:
+        def generate(self, prompt):
+            return json.dumps(EXPLANATION)
+    assert explain("prompt", FakeClient()).terms[0].term == "tumor response"
+
+
+def test_old_explanation_cache_is_rebuilt(tmp_path):
+    db_path = tmp_path / "old.sqlite3"
+    with sqlite3.connect(db_path) as db:
+        db.execute("CREATE TABLE explanations (analysis_id TEXT, node_id TEXT, "
+                   "explanation_json TEXT)")
+    assert storage.fetch_explanation("a", "b", db_path) is None
+
+
+def test_explanation_requires_api_key(client, monkeypatch):
+    api, _ = client
+    analysis_id = upload(api).json()["analysis_id"]
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    response = api.post(f"/graph/{analysis_id}/nodes/ct_scan/explain")
+    assert response.status_code == 503

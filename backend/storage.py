@@ -8,7 +8,9 @@ from pathlib import Path
 import sqlite3
 from uuid import uuid4
 
-from .contracts import AnalysisSummary, ExtractionIssue, Finding, GraphPayload
+from .contracts import (
+    AnalysisSummary, ConceptExplanation, ExtractionIssue, Finding, GraphPayload,
+)
 
 
 def get_database_path() -> Path:
@@ -39,6 +41,13 @@ def connection(db_path=None):
             if "issues_json" not in columns:
                 db.execute("ALTER TABLE analyses ADD COLUMN "
                            "issues_json TEXT NOT NULL DEFAULT '[]'")
+            cache_columns = {row["name"] for row in db.execute("PRAGMA table_info(explanations)")}
+            if cache_columns and "item_key" not in cache_columns:
+                db.execute("DROP TABLE explanations")
+            db.execute("""CREATE TABLE IF NOT EXISTS explanations (
+                analysis_id TEXT NOT NULL, item_key TEXT NOT NULL,
+                explanation_json TEXT NOT NULL, PRIMARY KEY (analysis_id, item_key)
+            )""")
             yield db
     finally:
         db.close()
@@ -94,6 +103,26 @@ def fetch_analysis(analysis_id: str, db_path=None):
                               for item in json.loads(row["issues_json"])],
         "pdf_path": row["pdf_path"],
     }
+
+
+def fetch_explanation(analysis_id: str, item_key: str, db_path=None):
+    """item_key is a node id, or "edge:<edge id>" for a relationship."""
+    with connection(db_path) as db:
+        row = db.execute(
+            "SELECT explanation_json FROM explanations WHERE analysis_id = ? AND item_key = ?",
+            (analysis_id, item_key),
+        ).fetchone()
+    return ConceptExplanation.model_validate_json(row[0]) if row else None
+
+
+def save_explanation(analysis_id: str, item_key: str, explanation, db_path=None) -> None:
+    explanation = ConceptExplanation.model_validate(explanation)
+    with connection(db_path) as db:
+        db.execute(
+            "INSERT OR REPLACE INTO explanations (analysis_id, item_key, explanation_json) "
+            "VALUES (?, ?, ?)",
+            (analysis_id, item_key, explanation.model_dump_json()),
+        )
 
 
 def list_history(db_path=None) -> list[AnalysisSummary]:

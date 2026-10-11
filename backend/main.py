@@ -14,12 +14,15 @@ import truststore
 from .contracts import (
     ErrorResponse,
     AnalysisResponse,
+    ConceptExplanation,
+    ExplanationResponse,
     HistoryResponse,
     GraphPayload,
     SimulationRequest,
     SimulationResponse,
     ValidationResponse,
 )
+from .explainer import concept_prompt, explain, relationship_prompt
 from .graph_engine import build_graph, graph_json
 from .ingestion import ExtractionError, ExtractionResult, extract_analysis
 from .rules import validate
@@ -93,8 +96,7 @@ def analyze_pdf(file: UploadFile = File(...),
         file.filename or "upload.pdf", result.raw_json, serialized, findings,
         result.issues, db_path=db_path, pdf_bytes=pdf_bytes,
     )
-    return {"analysis_id": analysis_id, "graph": serialized, "findings": findings,
-            "extraction_issues": result.issues}
+    return storage.fetch_analysis(analysis_id, db_path=db_path)
 
 
 @app.get("/graph/{analysis_id}", response_model=AnalysisResponse)
@@ -116,6 +118,66 @@ def retrieve_pdf(analysis_id: str, db_path=Depends(storage.get_database_path)):
         raise HTTPException(status_code=404, detail="PDF not found")
     return FileResponse(pdf_path, media_type="application/pdf",
                         filename=record["filename"], content_disposition_type="inline")
+
+
+def explain_with_gemini(prompt: str) -> ConceptExplanation:
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise HTTPException(status_code=503,
+                            detail="Explanations are not configured: set GEMINI_API_KEY")
+    return explain(prompt)
+
+
+def get_explainer() -> Callable[[str], ConceptExplanation]:
+    return explain_with_gemini
+
+
+def _explained(analysis_id: str, cache_key: str, item_id: str, db_path,
+               explainer: Callable, build_prompt: Callable[[GraphPayload], str | None]):
+    cached = storage.fetch_explanation(analysis_id, cache_key, db_path=db_path)
+    if cached is not None:
+        return {"item_id": item_id, **cached.model_dump()}
+    record = storage.fetch_analysis(analysis_id, db_path=db_path)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    prompt = build_prompt(record["graph"])
+    if prompt is None:
+        raise HTTPException(status_code=404, detail="Item not found in this analysis")
+    try:
+        explanation = ConceptExplanation.model_validate(explainer(prompt))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Explanation failed")
+        raise HTTPException(status_code=502, detail="Explanation failed") from exc
+    storage.save_explanation(analysis_id, cache_key, explanation, db_path=db_path)
+    return {"item_id": item_id, **explanation.model_dump()}
+
+
+@app.post("/graph/{analysis_id}/nodes/{node_id}/explain",
+          response_model=ExplanationResponse)
+def explain_node(analysis_id: str, node_id: str,
+                 explainer: Callable = Depends(get_explainer),
+                 db_path=Depends(storage.get_database_path)):
+    def build(graph: GraphPayload):
+        node = next((item for item in graph.nodes if item.id == node_id), None)
+        return concept_prompt(node) if node else None
+    return _explained(analysis_id, node_id, node_id, db_path, explainer, build)
+
+
+@app.post("/graph/{analysis_id}/edges/{edge_id}/explain",
+          response_model=ExplanationResponse)
+def explain_edge(analysis_id: str, edge_id: str,
+                 explainer: Callable = Depends(get_explainer),
+                 db_path=Depends(storage.get_database_path)):
+    def build(graph: GraphPayload):
+        edge = next((item for item in graph.edges
+                     if (item.id or f"{item.source}__{item.type}__{item.target}") == edge_id),
+                    None)
+        if edge is None:
+            return None
+        nodes = {node.id: node for node in graph.nodes}
+        return relationship_prompt(edge, nodes[edge.source], nodes[edge.target])
+    return _explained(analysis_id, f"edge:{edge_id}", edge_id, db_path, explainer, build)
 
 
 @app.get("/history", response_model=HistoryResponse)

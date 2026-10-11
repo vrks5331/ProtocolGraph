@@ -1,6 +1,6 @@
 import { ArrowUpRight, CheckCircle2, CircleAlert } from 'lucide-react';
 import type { Finding, GraphPayload, Selection } from '../lib/types';
-import { relatedNodes } from '../lib/analysisAdapter';
+import { findingSummary, relatedNodes } from '../lib/graphUtils';
 
 export default function Findings({
   graph,
@@ -16,7 +16,7 @@ export default function Findings({
   return findings.length ? (
     <div className="findings-list">
       {findings.map((finding) => {
-        const nodes = relatedNodes(finding.check_id, graph);
+        const nodes = relatedNodes(finding, graph);
         return (
           <button
             key={finding.id}
@@ -26,18 +26,15 @@ export default function Findings({
             <CircleAlert size={17} className={finding.tier === 'verified' ? 'red' : 'amber'} />
             <span className="finding-copy">
               <strong>{finding.title}</strong>
-              <small>
-                {finding.check_id === 'eligibility_conflict'
-                  ? 'Minimum age · 18 vs 21'
-                  : 'Response assessment · Day 42 vs Day 0'}
-              </small>
+              <small>{findingSummary(finding, graph)}</small>
             </span>
             <span className="finding-meta">
               <span className={finding.tier === 'verified' ? 'red' : 'amber'}>
                 {finding.tier === 'verified' ? 'Verified contradiction' : 'Missing dependency'}
               </span>
               <small>
-                {nodes.length} concepts · {finding.evidence.length} source{' '}
+                {nodes.length} {nodes.length === 1 ? 'concept' : 'concepts'} ·{' '}
+                {finding.evidence.length} source{' '}
                 {finding.evidence.length === 1 ? 'passage' : 'passages'}
               </small>
             </span>
@@ -50,8 +47,8 @@ export default function Findings({
     <div className="empty-state">
       <CheckCircle2 size={20} />
       <div>
-        <strong>No issues detected in demo rules</strong>
-        <p>Eligibility and assessment timing are consistent in the two sample checks.</p>
+        <strong>No issues found</strong>
+        <p>No conflicting eligibility values or unscheduled endpoint assessments were detected.</p>
       </div>
     </div>
   );

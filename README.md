@@ -21,17 +21,20 @@ the frontend. Change it only through team agreement.
 | `backend/graph_engine.py` | `GraphPayload` to and from a NetworkX `DiGraph` |
 | `backend/rules.py` | Protocol findings (eligibility conflicts, missing assessments) |
 | `backend/simulator.py` | What-if schedule changes |
+| `backend/explainer.py` | Plain-language explanations of concepts for non-experts |
 | `backend/storage.py` | SQLite persistence and stored PDFs |
 | `backend/main.py` | FastAPI app |
-| `frontend/` | React + TypeScript + Vite workspace (React Flow graph view) |
+| `frontend/` | React + TypeScript + Vite workspace (Cytoscape.js graph view) |
 
 ## API
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /analyze` | Upload a PDF; returns `analysis_id`, `graph`, `findings`, `extraction_issues` |
-| `GET /graph/{analysis_id}` | A stored analysis |
+| `POST /analyze` | Upload a PDF; returns the stored analysis (`analysis_id`, `filename`, `created_at`, `graph`, `findings`, `extraction_issues`) |
+| `GET /graph/{analysis_id}` | A stored analysis, in the same shape as `/analyze` |
 | `GET /graph/{analysis_id}/pdf` | The uploaded PDF, for showing source pages |
+| `POST /graph/{analysis_id}/nodes/{node_id}/explain` | Plain-English summary of one concept plus definitions of its jargon (Gemini; saved after the first call) |
+| `POST /graph/{analysis_id}/edges/{edge_id}/explain` | The same for one relationship, using both connected concepts |
 | `GET /history` | Stored analyses, newest first |
 | `POST /validate` | Run the rules on a graph |
 | `POST /simulate` | Apply schedule changes to one node and diff the findings |
@@ -79,8 +82,10 @@ npm.cmd install
 npm.cmd run dev
 ```
 
-Open http://127.0.0.1:5173. The frontend currently runs on the sample graphs in
-`data/` and does not call the backend yet; see
+Open http://127.0.0.1:5173 with the backend running. The frontend calls the API
+at `http://127.0.0.1:8000` by default; set `VITE_API_BASE_URL` (for example in
+`frontend/.env.local`) to point it elsewhere, and add the frontend's origin to
+`FRONTEND_ORIGINS` if it is not one of the defaults. See
 [frontend/README.md](frontend/README.md). If `npm install` fails with a
 certificate error or "Exit handler never called", set `NODE_USE_SYSTEM_CA=1`
 first so Node uses the operating system's certificate store.

@@ -75,11 +75,16 @@ def build_prompt(pages: list[PageText], feedback: str | None = None) -> str:
 
 
 class GeminiClient:
-    def __init__(self, model: str | None = None, api_key: str | None = None):
+    def __init__(self, model: str | None = None, api_key: str | None = None,
+                 system_instruction: str = SYSTEM_PROMPT,
+                 response_schema: dict | None = None, temperature: float = 0):
         from google import genai
 
         self._client = genai.Client(api_key=api_key)
         self._model = model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+        self._system_instruction = system_instruction
+        self._schema = response_schema or ExtractedGraph.model_json_schema()
+        self._temperature = temperature
 
     def generate(self, prompt: str) -> str:
         from google.genai import types
@@ -88,10 +93,10 @@ class GeminiClient:
             model=self._model,
             contents=prompt,
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
+                system_instruction=self._system_instruction,
                 response_mime_type="application/json",
-                response_json_schema=ExtractedGraph.model_json_schema(),
-                temperature=0,
+                response_json_schema=self._schema,
+                temperature=self._temperature,
             ),
         )
         return response.text or ""
