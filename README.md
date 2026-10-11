@@ -185,6 +185,30 @@ The AI “explain the effects” button is optional. It gets the edit list, the 
 
 ---
 
+## Tech stack
+
+The app is two processes that talk over HTTP: a Python API and a React workspace.
+
+**Backend (Python)**
+
+- **FastAPI** + **Uvicorn** — the HTTP API (`/analyze`, graph, history, scenarios, explanations).
+- **Pydantic** — the shared contract: what a concept, link, finding, and scenario edit are allowed to look like.
+- **pypdf** — pull text out of the uploaded PDF, page by page.
+- **Gemini** (`google-genai`, default model `gemini-3.8-flash`) — extract the graph from that text, and write optional plain-English explanations. The two consistency checks never call it.
+- **NetworkX** — the directed graph the schedule and eligibility rules walk.
+- **SQLite** — saved analyses, PDFs, scenarios, and cached explanations on disk.
+
+**Frontend (TypeScript)**
+
+- **React 19** + **Vite 6** — the workspace UI.
+- **Cytoscape.js** with **cose** (Web) and **cytoscape-dagre** (Flow) — the interactive map.
+- **Tailwind CSS 4** plus the tokens in `frontend/src/styles.css`.
+- **Vitest** and Testing Library for UI tests; **pytest** for the API.
+
+The browser calls the API at `http://127.0.0.1:8000` unless you set `VITE_API_BASE_URL`. Analyses stay on your machine under `~/.protocolgraph/` unless you point `PROTOCOLGRAPH_DB_PATH` somewhere else.
+
+---
+
 ## Run it locally
 
 Create a `.env` in the repo root:
