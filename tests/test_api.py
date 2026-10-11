@@ -56,7 +56,8 @@ def test_creation_empty_history_and_docs(client):
 
 
 @pytest.mark.parametrize("origin, allowed", [
-    ("http://localhost:5173", True), ("https://evil.example", False)])
+    ("http://127.0.0.1:5173", True), ("http://localhost:5173", True),
+    ("https://evil.example", False)])
 def test_cors_allows_only_frontend_origins(client, origin, allowed):
     response = client[0].get("/history", headers={"Origin": origin})
     assert (response.headers.get("access-control-allow-origin") == origin) is allowed
