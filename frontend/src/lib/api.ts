@@ -1,4 +1,11 @@
-import type { AnalysisResponse, ExplanationResponse, HistoryResponse } from './types';
+import type {
+  AnalysisResponse,
+  Edit,
+  ExplanationResponse,
+  HistoryResponse,
+  ScenarioResponse,
+  ScenarioSummary,
+} from './types';
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000').replace(
   /\/+$/,
@@ -95,6 +102,44 @@ export function explainRelationship(
 
 export async function listHistory() {
   return (await request<HistoryResponse>('/history')).analyses;
+}
+
+const scenarioPath = (scenarioId: string) => `/scenarios/${encodeURIComponent(scenarioId)}`;
+const jsonPost = (body: unknown): RequestInit => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+export function saveScenario(
+  analysisId: string,
+  name: string,
+  edits: Edit[],
+): Promise<ScenarioResponse> {
+  return request<ScenarioResponse>(
+    `/graph/${encodeURIComponent(analysisId)}/scenarios`,
+    jsonPost({ name, edits }),
+  );
+}
+
+export async function listScenarios(analysisId: string): Promise<ScenarioSummary[]> {
+  return (
+    await request<{ scenarios: ScenarioSummary[] }>(
+      `/graph/${encodeURIComponent(analysisId)}/scenarios`,
+    )
+  ).scenarios;
+}
+
+export function getScenario(scenarioId: string): Promise<ScenarioResponse> {
+  return request<ScenarioResponse>(scenarioPath(scenarioId));
+}
+
+export function analyzeScenario(scenarioId: string): Promise<ScenarioResponse> {
+  return request<ScenarioResponse>(`${scenarioPath(scenarioId)}/analyze`, { method: 'POST' });
+}
+
+export function explainScenario(scenarioId: string): Promise<ExplanationResponse> {
+  return request<ExplanationResponse>(`${scenarioPath(scenarioId)}/explain`, { method: 'POST' });
 }
 
 export function formatDate(iso?: string | null): string {

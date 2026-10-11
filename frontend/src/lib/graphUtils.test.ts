@@ -6,7 +6,9 @@ import {
   findingSummary,
   fuzzyMatchedNodes,
   issuesFor,
+  neighborhood,
   relatedNodes,
+  searchGraph,
 } from './graphUtils';
 
 describe('graphUtils', () => {
@@ -37,6 +39,24 @@ describe('graphUtils', () => {
     expect(findingSummary(missing, bare)).toBe(
       'Tumor response assessment · Day 42 vs no scheduled visit',
     );
+  });
+
+  it('highlights a concept and its immediate neighbors', () => {
+    expect(neighborhood(graph, { kind: 'node', id: 'visit_baseline' })).toEqual([
+      'ct_scan',
+      'visit_baseline',
+    ]);
+    expect(neighborhood(graph, { kind: 'node', id: 'age_synopsis' })).toEqual(['age_synopsis']);
+    expect(
+      neighborhood(graph, { kind: 'edge', id: 'endpoint_response__MEASURED_BY__ct_scan' }),
+    ).toEqual(['endpoint_response', 'ct_scan']);
+  });
+
+  it('searches concepts and relationships by name', () => {
+    expect(searchGraph(graph, 'synopsis').map((hit) => hit.id)).toEqual(['age_synopsis']);
+    expect(searchGraph(graph, 'measured').map((hit) => hit.kind)).toEqual(['edge']);
+    expect(searchGraph(graph, 'zzzz')).toEqual([]);
+    expect(searchGraph(graph, '  ')).toEqual([]);
   });
 
   it('derives stable edge ids and extraction issue lookups', () => {

@@ -16,13 +16,21 @@ import {
   Workflow,
 } from 'lucide-react';
 import { API_BASE_URL, ApiError, formatDate, getAnalysis, listHistory, pdfUrl } from './lib/api';
-import { TYPE_COLORS, edgeId, fuzzyMatchedNodes, humanize, relatedNodes } from './lib/graphUtils';
+import {
+  TYPE_COLORS,
+  edgeId,
+  fuzzyMatchedNodes,
+  humanize,
+  neighborhood,
+  relatedNodes,
+} from './lib/graphUtils';
 import type { AnalysisResponse, AnalysisSummary, NodeType, Selection } from './lib/types';
 import ProtocolCanvas, { type GraphLayout } from './components/ProtocolCanvas';
 import Findings from './components/Findings';
 import Inspector from './components/Inspector';
 import UploadDialog from './components/UploadDialog';
 import HistoryPanel from './components/HistoryPanel';
+import SimulateView from './components/SimulateView';
 
 type View = 'Overview' | 'Graph Explorer' | 'Simulate' | 'History';
 const navigation = [
@@ -34,15 +42,26 @@ const navigation = [
 const headings: Record<View, [string, string]> = {
   Overview: ['Protocol review', 'Review inconsistencies and trace each concept to its source.'],
   'Graph Explorer': ['Graph explorer', 'Explore extracted concepts and how they connect.'],
-  Simulate: ['Schedule simulation', 'Test schedule changes against the consistency checks.'],
+  Simulate: [
+    'Simulate scenarios',
+    'Change concept and relationship details and see how the consistency checks respond.',
+  ],
   History: ['Protocol library', 'Every analyzed protocol is saved here.'],
 };
 
 const LAYOUT_KEY = 'protocolgraph.graphLayout';
 
-function readHash(): string | null {
-  const match = window.location.hash.match(/^#\/analysis\/([^/]+)$/);
-  return match ? decodeURIComponent(match[1]) : null;
+function readHash(): { analysisId: string | null; scenarioId: string | null } {
+  const match = window.location.hash.match(/^#\/analysis\/([^/]+)(?:\/scenario\/([^/]+))?$/);
+  return {
+    analysisId: match ? decodeURIComponent(match[1]) : null,
+    scenarioId: match?.[2] ? decodeURIComponent(match[2]) : null,
+  };
+}
+
+function analysisHash(analysisId: string, scenarioId?: string | null) {
+  const base = `#/analysis/${encodeURIComponent(analysisId)}`;
+  return scenarioId ? `${base}/scenario/${encodeURIComponent(scenarioId)}` : base;
 }
 
 function errorText(error: unknown) {
@@ -50,8 +69,9 @@ function errorText(error: unknown) {
 }
 
 export default function App() {
-  const [view, setView] = useState<View>('Overview');
-  const [analysisId, setAnalysisId] = useState<string | null>(readHash);
+  const [view, setView] = useState<View>(() => (readHash().scenarioId ? 'Simulate' : 'Overview'));
+  const [analysisId, setAnalysisId] = useState<string | null>(() => readHash().analysisId);
+  const [scenarioId, setScenarioId] = useState<string | null>(() => readHash().scenarioId);
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -85,7 +105,12 @@ export default function App() {
   }, [refreshHistory]);
 
   useEffect(() => {
-    const onHashChange = () => setAnalysisId(readHash());
+    const onHashChange = () => {
+      const next = readHash();
+      setAnalysisId(next.analysisId);
+      setScenarioId(next.scenarioId);
+      if (next.scenarioId) setView('Simulate');
+    };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
@@ -136,29 +161,44 @@ export default function App() {
     analysis && selection?.kind === 'finding'
       ? analysis.findings.find((f) => f.id === selection.id)
       : undefined;
-  const highlighted = useMemo(
-    () => (analysis && selectedFinding ? relatedNodes(selectedFinding, analysis.graph) : []),
-    [selectedFinding, analysis],
-  );
+  const highlighted = useMemo(() => {
+    if (!analysis) return [];
+    if (selectedFinding) return relatedNodes(selectedFinding, analysis.graph);
+    return neighborhood(analysis.graph, selection);
+  }, [selectedFinding, analysis, selection]);
   const fuzzy = useMemo(() => fuzzyMatchedNodes(analysis?.extraction_issues), [analysis]);
 
   function openAnalysis(id: string) {
-    window.location.hash = `#/analysis/${encodeURIComponent(id)}`;
+    window.location.hash = analysisHash(id);
     setAnalysisId(id);
+    setScenarioId(null);
     setView('Overview');
+  }
+  function openScenario(nextAnalysisId: string, nextScenarioId: string | null) {
+    window.location.hash = analysisHash(nextAnalysisId, nextScenarioId);
+    setAnalysisId(nextAnalysisId);
+    setScenarioId(nextScenarioId);
+    setSelection(null);
+    setView('Simulate');
   }
   function handleUploaded(result: AnalysisResponse) {
     setAnalysis(result);
     setSelection(null);
     setFocusRequest(0);
     setLoadError(null);
-    window.location.hash = `#/analysis/${encodeURIComponent(result.analysis_id)}`;
+    window.location.hash = analysisHash(result.analysis_id);
     setAnalysisId(result.analysis_id);
+    setScenarioId(null);
     setView('Graph Explorer');
     setUploadOpen(false);
     void refreshHistory();
   }
-  const select = setSelection;
+  function select(next: Selection) {
+    setSelection(next);
+    if (next?.kind === 'node' || next?.kind === 'edge') {
+      setFocusRequest((value) => value + 1);
+    }
+  }
   function chooseLayout(next: GraphLayout) {
     setGraphLayout(next);
     localStorage.setItem(LAYOUT_KEY, next);
@@ -173,6 +213,10 @@ export default function App() {
   function navigate(next: View) {
     setView(next);
     setSelection(null);
+    if (next !== 'Simulate' && scenarioId && analysisId) {
+      window.location.hash = analysisHash(analysisId);
+      setScenarioId(null);
+    }
   }
 
   const reviewView = view === 'Overview' || view === 'Graph Explorer';
@@ -449,18 +493,40 @@ export default function App() {
                   error={historyError}
                   currentId={analysis?.analysis_id ?? null}
                   onOpen={openAnalysis}
+                  onOpenScenario={openScenario}
                   onRetry={() => void refreshHistory()}
                   onUpload={() => setUploadOpen(true)}
                 />
-              ) : view === 'Simulate' ? (
-                <section className="panel state-panel" aria-label="Schedule simulation">
+              ) : view === 'Simulate' && analysis && !loading && !loadError ? (
+                <SimulateView
+                  key={analysis.analysis_id}
+                  analysis={analysis}
+                  scenarioId={scenarioId}
+                  layout={graphLayout}
+                  onLayout={chooseLayout}
+                  onOpenScenario={(id) => openScenario(analysis.analysis_id, id)}
+                  onScenariosChanged={() => void refreshHistory()}
+                />
+              ) : view === 'Simulate' && !analysis && !loading && !loadError ? (
+                <section className="panel state-panel" aria-label="Simulate scenarios">
                   <div className="simulation-placeholder">
                     <SlidersHorizontal size={22} className="upload-symbol" />
-                    <h3>Schedule simulation is coming soon</h3>
+                    <h3>Open an analysis to simulate changes</h3>
                     <p>
-                      You will be able to change a visit or endpoint schedule and see which findings
-                      it creates or resolves before editing the protocol.
+                      Scenarios start from an analyzed protocol. Edit a concept's schedule or
+                      eligibility value and see which findings it creates or resolves, without
+                      changing the original analysis.
                     </p>
+                    <div className="welcome-actions">
+                      {history.length > 0 && (
+                        <button className="secondary-button" onClick={() => navigate('History')}>
+                          <History size={15} /> Open a previous analysis
+                        </button>
+                      )}
+                      <button className="primary-button" onClick={() => setUploadOpen(true)}>
+                        <Upload size={15} /> Upload protocol
+                      </button>
+                    </div>
                   </div>
                 </section>
               ) : (

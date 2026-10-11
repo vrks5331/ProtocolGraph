@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from backend.contracts import GraphPayload, SimulationRequest
+from backend.contracts import Edit, GraphPayload, ScenarioCreate
 
 
 def test_graph_payload_accepts_valid_graph():
@@ -60,25 +60,52 @@ def test_graph_payload_rejects_unknown_types():
         )
 
 
-@pytest.mark.parametrize("value", [-1, True, 1.5])
-def test_simulation_request_rejects_invalid_schedule_values(value):
-    with pytest.raises(ValidationError):
-        SimulationRequest.model_validate(
-            {
-                "graph": {"nodes": [], "edges": []},
-                "node_id": "visit",
-                "changes": {"day": value},
-            }
-        )
+@pytest.mark.parametrize(
+    "entity, field, after",
+    [
+        ("node", "day", -3),
+        ("node", "required_day", 0),
+        ("node", "label", "Week 6 visit"),
+        ("node", "value", "18 years"),
+        ("node", "window_after_days", None),
+        ("edge", "required", False),
+        ("edge", "arm_ids", ["arm_a"]),
+    ],
+)
+def test_edit_accepts_supported_values(entity, field, after):
+    edit = Edit(entity=entity, target_id="x", field=field, after=after, before=1)
+    assert edit.after == after
 
 
-@pytest.mark.parametrize("changes", [{}, {"label": 1}])
-def test_simulation_request_requires_supported_changes(changes):
+@pytest.mark.parametrize(
+    "entity, field, after",
+    [
+        ("node", "day", True),
+        ("node", "day", 1.5),
+        ("node", "window_before_days", -1),
+        ("node", "required_day", -1),
+        ("node", "label", 1),
+        ("node", "page", 3),
+        ("node", "required", True),
+        ("edge", "required", "yes"),
+        ("edge", "day", 1),
+        ("edge", "arm_ids", "arm_a"),
+    ],
+)
+def test_edit_rejects_unsupported_fields_and_values(entity, field, after):
     with pytest.raises(ValidationError):
-        SimulationRequest.model_validate(
-            {
-                "graph": {"nodes": [], "edges": []},
-                "node_id": "visit",
-                "changes": changes,
-            }
-        )
+        Edit(entity=entity, target_id="x", field=field, after=after)
+
+
+def test_edit_rejects_no_op():
+    with pytest.raises(ValidationError, match="changes nothing"):
+        Edit(entity="node", target_id="x", field="day", before=4, after=4)
+
+
+def test_scenario_requires_name_and_unique_edits():
+    edit = {"entity": "node", "target_id": "x", "field": "day", "after": 1}
+    assert ScenarioCreate(name="  Later visit ", edits=[edit]).name == "Later visit"
+    for bad in [{"name": " ", "edits": [edit]}, {"name": "x", "edits": []},
+                {"name": "x", "edits": [edit, {**edit, "after": 2}]}]:
+        with pytest.raises(ValidationError):
+            ScenarioCreate.model_validate(bad)

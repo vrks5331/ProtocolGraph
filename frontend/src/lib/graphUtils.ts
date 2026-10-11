@@ -5,6 +5,7 @@ import type {
   GraphPayload,
   NodeType,
   Relationship,
+  Selection,
 } from './types';
 
 export const TYPE_COLORS: Record<NodeType, string> = {
@@ -37,6 +38,71 @@ function assessmentPath(finding: Finding, graph: GraphPayload) {
   const procedures = linkedTargets(graph, [finding.node_id], 'MEASURED_BY');
   const visits = linkedTargets(graph, procedures, 'SCHEDULED_AT');
   return { procedures, visits };
+}
+
+/** The selected concept plus anything directly connected to it. */
+export function neighborhood(graph: GraphPayload, selection: Selection): string[] {
+  if (selection?.kind === 'edge') {
+    const edge = graph.edges.find((item) => edgeId(item) === selection.id);
+    return edge
+      ? graph.nodes
+          .filter((node) => node.id === edge.source || node.id === edge.target)
+          .map((n) => n.id)
+      : [];
+  }
+  if (selection?.kind !== 'node') return [];
+  const ids = new Set([selection.id]);
+  for (const edge of graph.edges) {
+    if (edge.source === selection.id) ids.add(edge.target);
+    if (edge.target === selection.id) ids.add(edge.source);
+  }
+  return graph.nodes.filter((node) => ids.has(node.id)).map((node) => node.id);
+}
+
+export interface SearchHit {
+  kind: 'node' | 'edge';
+  id: string;
+  label: string;
+  detail: string;
+}
+
+function haystack(parts: unknown[]) {
+  return parts
+    .filter((part) => part != null && part !== '')
+    .map((part) => String(part).toLowerCase())
+    .join(' ');
+}
+
+/** Concepts and relationships whose name, type, or id contains the query. */
+export function searchGraph(graph: GraphPayload, query: string, limit = 8): SearchHit[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const hits: SearchHit[] = [];
+  for (const node of graph.nodes) {
+    if (haystack([node.label, node.id, node.type, node.description, node.field]).includes(needle)) {
+      hits.push({
+        kind: 'node',
+        id: node.id,
+        label: conceptLabel(node),
+        detail: node.type,
+      });
+    }
+  }
+  for (const edge of graph.edges) {
+    const id = edgeId(edge);
+    const source = conceptLabel(nodes.get(edge.source), edge.source);
+    const target = conceptLabel(nodes.get(edge.target), edge.target);
+    if (haystack([id, edge.type, source, target, edge.condition_text]).includes(needle)) {
+      hits.push({
+        kind: 'edge',
+        id,
+        label: `${source} → ${target}`,
+        detail: humanize(edge.type).toLowerCase(),
+      });
+    }
+  }
+  return hits.slice(0, limit);
 }
 
 /** Concepts a finding refers to, in graph order. */

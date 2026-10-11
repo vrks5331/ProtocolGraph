@@ -71,6 +71,38 @@ export interface AnalysisSummary {
   analysis_id: string;
   filename: string;
   created_at: string;
+  scenario_count?: number;
+}
+export type EditEntity = 'node' | 'edge';
+export interface Edit {
+  entity: EditEntity;
+  target_id: string;
+  field: string;
+  before: unknown;
+  after: unknown;
+}
+export type ScenarioStatus = 'saved' | 'analyzed';
+export interface ScenarioSummary {
+  scenario_id: string;
+  analysis_id: string;
+  name: string;
+  created_at: string;
+  edit_count: number;
+  status: ScenarioStatus;
+}
+export interface ScenarioResponse {
+  scenario_id: string;
+  analysis_id: string;
+  name: string;
+  created_at: string;
+  edits: Edit[];
+  status: ScenarioStatus;
+  graph?: GraphPayload | null;
+  findings?: Finding[] | null;
+  new_issues?: Finding[] | null;
+  resolved_issues?: Finding[] | null;
+  remaining_issues?: Finding[] | null;
+  affected_nodes?: string[] | null;
 }
 export interface HistoryResponse {
   analyses: AnalysisSummary[];

@@ -33,15 +33,20 @@ npm.cmd run format:check
   can be cancelled, and gives up after 5 minutes. Backend errors are shown with
   their detail (422 for unextractable PDFs, 503 when `GEMINI_API_KEY` is
   missing).
-- **Current analysis** lives in the URL hash (`#/analysis/{id}`), so reloading
+- **Current analysis** lives in the URL hash (`#/analysis/{id}`, or
+  `#/analysis/{id}/scenario/{scenarioId}` with a scenario open), so reloading
   or sharing the link reopens it through `GET /graph/{id}`.
 - **History** (`src/components/HistoryPanel.tsx`) lists `GET /history`, newest
-  first, and opens an entry on click.
-- **Graph** (`src/components/ProtocolCanvas.tsx`) renders with Cytoscape.js and
-  a left-to-right dagre layout. Nodes are colored by type; nodes whose source
-  quote only matched approximately have a dashed border. Selecting a finding
-  highlights and zooms to its concepts. Text view lists every concept and
-  relationship and is the primary view on phones.
+  first, and opens an entry on click. Analyses with scenarios show
+  "N scenarios", which expands to the list; clicking one opens it in Simulate.
+- **Graph** (`src/components/ProtocolCanvas.tsx`) renders with Cytoscape.js in
+  a Web layout (circular nodes, cose) or a Flow layout (cards, left-to-right
+  dagre); the choice is remembered. Nodes are colored by type; nodes whose
+  source quote only matched approximately have a dashed border. Hovering shows a
+  tooltip, and clicking a concept zooms to it and highlights its neighbors.
+  A search icon on the graph filters concepts and relationships by name.
+  Selecting a finding highlights and zooms to its concepts. Text view lists
+  every concept and relationship and is the primary view on phones.
 - **Inspector** (`src/components/Inspector.tsx`) shows source quotes with links
   to the page in the stored PDF (`GET /graph/{id}/pdf#page=N`), concept and
   relationship details, and extraction notes for the selected item.
@@ -52,7 +57,28 @@ npm.cmd run format:check
   qualifiers (`src/lib/glossary.ts`). The same sentences appear under each
   connected concept. The explain button asks the backend for an AI-written
   summary and definitions of the jargon involved.
-- **Simulate** is a placeholder tab; the what-if feature is not built yet.
+- **Simulate** (`src/components/SimulateView.tsx`) builds what-if scenarios on
+  the open analysis without changing it.
+  - Click a concept or relationship and change its details in
+    `ScenarioEditor.tsx`. Fields the checks read carry an "Affects checks"
+    badge, and changed fields show the original value. Moving or zooming the
+    graph is not an edit.
+  - Each change goes into an edit log (`src/lib/edits.ts`): changing a field
+    again updates the same entry, and changing it back removes it. "Pending
+    changes" lists each edit as a sentence with an undo button.
+  - Save edits (enabled only once there is an edit) asks for a name and saves
+    the scenario, which then becomes read-only; Duplicate copies its edits into
+    a new draft. Analyze scenario re-runs the checks on the edited graph.
+  - `ScenarioResults.tsx` opens with the outcome (for example "1 new finding")
+    and scrolls into view after Analyze. It groups findings as Resolved, New,
+    and Unchanged, each with a line naming the edits behind it and an
+    "In plain terms" description of the check, and highlights the affected
+    concepts. When nothing changes, "Why nothing changed" explains each edit
+    (`src/lib/effects.ts`). "Explain the effects in plain English" asks the
+    backend for an AI summary.
+  - Every editable field has an everyday description, the editor explains the
+    selected concept or relationship (with the same AI explain button as the
+    inspector), and the empty editor describes what the two checks look at.
 
 `src/lib/api.ts` is the only module that calls the network.
 `src/lib/graphUtils.ts` derives finding context from the graph: an eligibility
@@ -82,3 +108,5 @@ browser.
 - Stop the backend: History shows an error and the sidebar shows
   "Backend unreachable".
 - At 390px wide, use the text view and the evidence drawer.
+- In Simulate, pan and zoom the graph (Save stays disabled), edit a visit day,
+  undo it, then save, analyze, and explain a scenario. Reopen it from History.

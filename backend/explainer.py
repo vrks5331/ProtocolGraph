@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 
-from .contracts import ConceptExplanation, Edge, Node
+from .contracts import ConceptExplanation, Edge, Edit, GraphPayload, Node
+from .graph_engine import edge_key
 from .ingestion.gemini_client import GeminiClient, LLMClient
 
 SYSTEM_PROMPT = """You explain clinical trial protocol content to someone with no
@@ -43,6 +44,49 @@ def relationship_prompt(edge: Edge, source: Node, target: Node) -> str:
         f"Relationship:\n{_fields(edge)}\n\n"
         f"From ({source.type}):\n{_fields(source)}\n\n"
         f"To ({target.type}):\n{_fields(target)}"
+    )
+
+
+def _show(value) -> str:
+    return "unset" if value is None else json.dumps(value)
+
+
+def _edit_line(edit: Edit, nodes: dict[str, Node], edges: dict[str, Edge]) -> str:
+    change = f"{edit.field} changed from {_show(edit.before)} to {_show(edit.after)}"
+    if edit.entity == "node":
+        node = nodes[edit.target_id]
+        return f"- {node.type} \"{node.label}\": {change}"
+    edge = edges[edit.target_id]
+    return (f"- relationship \"{nodes[edge.source].label}\" {edge.type} "
+            f"\"{nodes[edge.target].label}\": {change}")
+
+
+def _finding_lines(findings: list[dict]) -> str:
+    return "\n".join(f"- {item['title']} ({item['check_id']})" for item in findings) or "- none"
+
+
+def scenario_prompt(scenario: dict, base: GraphPayload) -> str:
+    """Prompt for the effects of a scenario's edits, grounded in the protocol's own text."""
+    nodes = {node.id: node for node in base.nodes}
+    edges = {edge_key(edge): edge for edge in base.edges}
+    edits = "\n".join(_edit_line(edit, nodes, edges) for edit in scenario["edits"])
+    passages = "\n".join(
+        f"- {nodes[node_id].label} (page {nodes[node_id].page or '?'}): "
+        f"{nodes[node_id].source_text}"
+        for node_id in scenario["affected_nodes"]
+        if node_id in nodes and nodes[node_id].source_text
+    ) or "- none"
+    return (
+        "A reviewer made hypothetical edits to a clinical trial protocol and re-ran its "
+        "automatic consistency checks. Explain, for a layperson, what the edits change, why "
+        "each consistency finding was resolved or introduced, and what that would mean for "
+        "running the study. If no findings changed, say so and explain why the edits did not "
+        "matter to the checks. Use only the information below.\n\n"
+        f"Edits:\n{edits}\n\n"
+        f"Findings resolved by the edits:\n{_finding_lines(scenario['resolved_issues'])}\n\n"
+        f"Findings introduced by the edits:\n{_finding_lines(scenario['new_issues'])}\n\n"
+        f"Findings unchanged:\n{_finding_lines(scenario['remaining_issues'])}\n\n"
+        f"Original protocol text for the affected items:\n{passages}"
     )
 
 
