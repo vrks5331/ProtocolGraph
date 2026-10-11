@@ -247,3 +247,9 @@ npm.cmd run format:check
 ```
 
 Backend tests fake Gemini and never call the network. GitHub Actions runs the backend tests and the frontend format check, tests, and build on every pull request and on pushes to `main`.
+
+---
+
+## HackRU / Regeneron Slide Deck
+
+[View our slide deck](https://docs.google.com/presentation/d/1pzEKdYOCZJM7xAyKaCAkBhKuFt10Let6/edit?usp=sharing&ouid=111896649601130696503&rtpof=true&sd=true)
