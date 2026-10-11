@@ -1,7 +1,7 @@
 # ProtocolGraph
 
 ProtocolGraph converts a clinical trial protocol into a validated graph, reports
-logical inconsistencies, and simulates schedule changes.
+logical inconsistencies, and lets you test what-if edits as scenarios.
 
 ## Backend flow
 
@@ -20,8 +20,8 @@ the frontend. Change it only through team agreement.
 | `backend/ingestion/` | PDF text, Gemini extraction, validation, consistency checks |
 | `backend/graph_engine.py` | `GraphPayload` to and from a NetworkX `DiGraph` |
 | `backend/rules.py` | Protocol findings (eligibility conflicts, missing assessments) |
-| `backend/simulator.py` | What-if schedule changes |
-| `backend/explainer.py` | Plain-language explanations of concepts for non-experts |
+| `backend/simulator.py` | Applies scenario edits to a copy of a graph and diffs the findings |
+| `backend/explainer.py` | Plain-language explanations of concepts, relationships, and scenario effects |
 | `backend/storage.py` | SQLite persistence and stored PDFs |
 | `backend/main.py` | FastAPI app |
 | `frontend/` | React + TypeScript + Vite workspace (Cytoscape.js graph view) |
@@ -35,13 +35,39 @@ the frontend. Change it only through team agreement.
 | `GET /graph/{analysis_id}/pdf` | The uploaded PDF, for showing source pages |
 | `POST /graph/{analysis_id}/nodes/{node_id}/explain` | Plain-English summary of one concept plus definitions of its jargon (Gemini; saved after the first call) |
 | `POST /graph/{analysis_id}/edges/{edge_id}/explain` | The same for one relationship, using both connected concepts |
-| `GET /history` | Stored analyses, newest first |
+| `GET /history` | Stored analyses, newest first, each with its `scenario_count` |
+| `POST /graph/{analysis_id}/scenarios` | Save a named scenario: `{"name", "edits"}` (status `saved`) |
+| `GET /graph/{analysis_id}/scenarios` | The analysis's scenarios, newest first |
+| `GET /scenarios/{scenario_id}` | One scenario, with its results once analyzed |
+| `POST /scenarios/{scenario_id}/analyze` | Re-run the rules on the edited graph and store the result (status `analyzed`; repeat calls return the stored result) |
+| `POST /scenarios/{scenario_id}/explain` | Plain-English account of the scenario's effects, grounded in the protocol text of the affected concepts (Gemini; saved after the first call) |
 | `POST /validate` | Run the rules on a graph |
-| `POST /simulate` | Apply schedule changes to one node and diff the findings |
 
 `/analyze` returns 422 when a PDF cannot be extracted (for example, a scanned
 PDF with no text) and 503 when `GEMINI_API_KEY` is not set. Extraction of a
 long protocol can take over a minute, so clients need a generous timeout.
+
+### Scenarios
+
+A scenario is a list of metadata edits saved under an analysis; the analysis
+itself never changes. Each edit records what changed:
+
+```json
+{"entity": "node", "target_id": "visit_baseline", "field": "day", "before": 0, "after": 42}
+```
+
+| Entity | Editable fields |
+| --- | --- |
+| node | `label`, `description`; visits: `day` (may be negative), `window_before_days`, `window_after_days` (0 or more); endpoints: `required_day` (0 or more); eligibility criteria: `value` |
+| edge | `required` (true, false, or null), `condition_text`, `arm_ids`, `pop_ids` |
+
+Edges are identified by their `id`, or `{source}__{type}__{target}` when they
+have none. Saving returns 409 when an edit's `before` no longer matches the
+stored graph and 422 for unknown items or invalid values. Analysis is
+deterministic and does not call Gemini. The current checks read visit days and
+windows, endpoint required days, and eligibility values; the other fields are
+informational, so editing them cannot change findings. Adding or removing nodes
+and edges is not supported.
 
 ## Configuration
 
@@ -103,6 +129,8 @@ Backend tests use a fake Gemini client and never call the network. GitHub
 Actions runs the backend tests and the frontend format check, tests, and build
 on every pull request and on pushes to `main`. Run `npm.cmd run format` in
 `frontend/` before committing frontend changes.
+
+To walk every feature in the browser, use [MANUAL_QA.md](MANUAL_QA.md).
 
 ## Branches
 

@@ -87,20 +87,14 @@ def test_analyze_and_exact_retrieval(client, name):
         assert db.execute("SELECT COUNT(*) FROM analyses").fetchone()[0] == 1
 
 
-def test_history_order_and_simulation_immutability(client):
+def test_history_order(client):
     api, db_path = client
     first = upload(api, filename="first.pdf").json()
     second = upload(api, "injected", "second.pdf").json()
     history = HistoryResponse.model_validate(api.get("/history").json())
     assert [item.analysis_id for item in history.analyses] == [second["analysis_id"], first["analysis_id"]]
     assert [item.filename for item in history.analyses] == ["second.pdf", "first.pdf"]
-    before = storage.fetch_analysis(first["analysis_id"], db_path)
-    response = api.post("/simulate", json={"graph": first["graph"],
-                        "node_id": "endpoint_response", "changes": {"required_day": 70}})
-    assert response.status_code == 200
-    assert response.json()["new_issues"][0]["check_id"] == "missing_assessment"
-    assert storage.fetch_analysis(first["analysis_id"], db_path) == before
-    assert api.get(f"/graph/{first['analysis_id']}").json() == first
+    assert [item.scenario_count for item in history.analyses] == [0, 0]
 
 
 def test_unknown_id(client):
@@ -132,12 +126,8 @@ def test_existing_routes_and_validation(client):
     assert response.status_code == 200
     assert response.json()["issues"] == validate(build_graph(payload("injected")))
     assert api.post("/validate", json={"nodes": [{"id": "x", "type": "bad"}]}).status_code == 422
-    request = {"graph": payload("baseline").model_dump(mode="json", exclude_none=True),
-               "node_id": "absent", "changes": {"day": 1}}
-    assert api.post("/simulate", json=request).status_code == 400
-    request["changes"] = {"label": 1}
-    assert api.post("/simulate", json=request).status_code == 422
     assert api.post("/analyze").status_code == 422
+    assert api.post("/simulate", json={}).status_code in (404, 405)
 
 
 def test_storage_failure_is_sanitized(client, monkeypatch):
@@ -309,3 +299,98 @@ def test_explanation_requires_api_key(client, monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     response = api.post(f"/graph/{analysis_id}/nodes/ct_scan/explain")
     assert response.status_code == 503
+
+
+MOVE_VISIT = {"entity": "node", "target_id": "visit_baseline", "field": "day",
+              "before": 0, "after": 42}
+
+
+def create_scenario(api, analysis_id, edits=(MOVE_VISIT,), name="Later visit"):
+    return api.post(f"/graph/{analysis_id}/scenarios", json={"name": name, "edits": list(edits)})
+
+
+def test_scenario_lifecycle_leaves_parent_unchanged(client):
+    api, db_path = client
+    parent = upload(api, "injected").json()
+    analysis_id = parent["analysis_id"]
+    before = storage.fetch_analysis(analysis_id, db_path)
+
+    created = create_scenario(api, analysis_id)
+    assert created.status_code == 201
+    scenario = created.json()
+    assert scenario["status"] == "saved"
+    assert scenario["edits"] == [MOVE_VISIT]
+    assert scenario["findings"] is None and scenario["graph"] is None
+    assert UUID(scenario["scenario_id"]).version == 4
+
+    listed = api.get(f"/graph/{analysis_id}/scenarios").json()["scenarios"]
+    assert [(item["name"], item["edit_count"], item["status"]) for item in listed] == [
+        ("Later visit", 1, "saved")]
+    assert api.get("/history").json()["analyses"][0]["scenario_count"] == 1
+
+    analyzed = api.post(f"/scenarios/{scenario['scenario_id']}/analyze")
+    assert analyzed.status_code == 200
+    result = analyzed.json()
+    assert result["status"] == "analyzed"
+    assert [item["check_id"] for item in result["resolved_issues"]] == ["missing_assessment"]
+    assert [item["check_id"] for item in result["remaining_issues"]] == ["eligibility_conflict"]
+    assert result["new_issues"] == []
+    assert "visit_baseline" in result["affected_nodes"]
+    visit = next(node for node in result["graph"]["nodes"] if node["id"] == "visit_baseline")
+    assert visit["day"] == 42
+    assert api.post(f"/scenarios/{scenario['scenario_id']}/analyze").json() == result
+    assert api.get(f"/scenarios/{scenario['scenario_id']}").json() == result
+    assert api.get(f"/graph/{analysis_id}/scenarios").json()["scenarios"][0]["status"] == "analyzed"
+
+    assert storage.fetch_analysis(analysis_id, db_path) == before
+    assert api.get(f"/graph/{analysis_id}").json() == parent
+
+
+def test_scenarios_are_scoped_to_their_analysis(client):
+    api, _ = client
+    first = upload(api, "injected").json()["analysis_id"]
+    second = upload(api, "injected").json()["analysis_id"]
+    create_scenario(api, first, name="one")
+    create_scenario(api, first, name="two")
+    assert [item["name"] for item in api.get(f"/graph/{first}/scenarios").json()["scenarios"]] == [
+        "two", "one"]
+    assert api.get(f"/graph/{second}/scenarios").json() == {"scenarios": []}
+
+
+def test_scenario_rejects_stale_and_invalid_edits(client):
+    api, _ = client
+    analysis_id = upload(api, "injected").json()["analysis_id"]
+    stale = create_scenario(api, analysis_id, [{**MOVE_VISIT, "before": 7}])
+    assert stale.status_code == 409
+    assert "visit_baseline" in stale.json()["detail"]
+    assert create_scenario(api, analysis_id, [{**MOVE_VISIT, "target_id": "ghost"}]).status_code == 422
+    assert create_scenario(api, analysis_id, [{**MOVE_VISIT, "after": "soon"}]).status_code == 422
+    assert create_scenario(api, analysis_id, []).status_code == 422
+    assert create_scenario(api, "unknown").status_code == 404
+    assert api.get(f"/graph/{analysis_id}/scenarios").json() == {"scenarios": []}
+    assert api.get("/scenarios/unknown").status_code == 404
+    assert api.post("/scenarios/unknown/analyze").status_code == 404
+    assert api.get("/graph/unknown/scenarios").status_code == 404
+
+
+def test_scenario_explanation_is_grounded_and_cached(client):
+    api, _ = client
+    analysis_id = upload(api, "injected").json()["analysis_id"]
+    scenario_id = create_scenario(api, analysis_id).json()["scenario_id"]
+    seen = []
+
+    def explainer(prompt):
+        seen.append(prompt)
+        return EXPLANATION
+    use_explainer(explainer)
+    url = f"/scenarios/{scenario_id}/explain"
+    assert api.post(url).status_code == 409
+    api.post(f"/scenarios/{scenario_id}/analyze")
+    assert api.post(url).json() == {"item_id": scenario_id, **EXPLANATION}
+    assert api.post(url).status_code == 200
+    assert len(seen) == 1
+    prompt = seen[0]
+    assert '- visit "Baseline visit": day changed from 0 to 42' in prompt
+    assert "Findings resolved by the edits:\n- " in prompt and "missing_assessment" in prompt
+    assert "Tumor response will be assessed" in prompt
+    assert api.post("/scenarios/unknown/explain").status_code == 404

@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 .pytest_tmp/
 *.sqlite3
+.venv/
+venv/
+.DS_Store
+Thumbs.db

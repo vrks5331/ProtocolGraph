@@ -8,7 +8,11 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
+    StrictFloat,
     StrictInt,
+    StrictStr,
+    TypeAdapter,
     field_validator,
     model_validator,
 )
@@ -128,48 +132,114 @@ class ExtractionIssue(BaseModel):
     message: str = Field(min_length=1)
 
 
-ScheduleValue = Annotated[StrictInt, Field(ge=0)]
-EDITABLE_SCHEDULE_FIELDS = frozenset(
-    {"required_day", "day", "window_before_days", "window_after_days"}
-)
-
-
-class SimulationRequest(BaseModel):
-    graph: GraphPayload
-    node_id: str = Field(min_length=1)
-    changes: dict[str, ScheduleValue]
-
-    @field_validator("changes")
-    @classmethod
-    def validate_changes(
-        cls, changes: dict[str, ScheduleValue]
-    ) -> dict[str, ScheduleValue]:
-        if not changes:
-            raise ValueError("At least one schedule change is required")
-        unsupported = set(changes) - EDITABLE_SCHEDULE_FIELDS
-        if unsupported:
-            names = ", ".join(sorted(unsupported))
-            raise ValueError(f"Unsupported schedule field(s): {names}")
-        return changes
-
-
 class ValidationResponse(BaseModel):
     graph: GraphPayload
     issues: list[Finding] = Field(default_factory=list)
 
 
-class SimulationResponse(BaseModel):
-    changed_node: str
-    affected_nodes: list[str] = Field(default_factory=list)
-    new_issues: list[Finding] = Field(default_factory=list)
-    resolved_issues: list[Finding] = Field(default_factory=list)
-    remaining_issues: list[Finding] = Field(default_factory=list)
+NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
+OptionalText = Annotated[str, Field(max_length=2000)] | None
+
+# Metadata a scenario may change, with the type each new value must have.
+EDITABLE_FIELDS: dict[str, dict[str, Any]] = {
+    "node": {
+        "label": OptionalText,
+        "description": OptionalText,
+        "day": StrictInt | None,
+        "required_day": NonNegativeInt | None,
+        "window_before_days": NonNegativeInt | None,
+        "window_after_days": NonNegativeInt | None,
+        "value": StrictStr | StrictInt | StrictFloat | StrictBool | None,
+    },
+    "edge": {
+        "required": StrictBool | None,
+        "condition_text": OptionalText,
+        "arm_ids": list[StrictStr] | None,
+        "pop_ids": list[StrictStr] | None,
+    },
+}
+_FIELD_ADAPTERS = {
+    entity: {name: TypeAdapter(kind) for name, kind in fields.items()}
+    for entity, fields in EDITABLE_FIELDS.items()
+}
+
+
+class Edit(BaseModel):
+    """One metadata change: `before` is the base value, `after` the scenario value."""
+
+    entity: Literal["node", "edge"]
+    target_id: str = Field(min_length=1)
+    field: str = Field(min_length=1)
+    before: Any = None
+    after: Any = None
+
+    @model_validator(mode="after")
+    def validate_value(self) -> Edit:
+        adapter = _FIELD_ADAPTERS[self.entity].get(self.field)
+        if adapter is None:
+            raise ValueError(f"{self.field} cannot be edited on a {self.entity}")
+        self.after = adapter.validate_python(self.after)
+        if self.after == self.before:
+            raise ValueError(f"Edit to {self.field} on {self.target_id} changes nothing")
+        return self
+
+
+class ScenarioCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    edits: list[Edit] = Field(min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, name: str) -> str:
+        if not name.strip():
+            raise ValueError("Scenario name is required")
+        return name.strip()
+
+    @field_validator("edits")
+    @classmethod
+    def unique_edits(cls, edits: list[Edit]) -> list[Edit]:
+        keys = [(edit.entity, edit.target_id, edit.field) for edit in edits]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Each field may be edited only once per scenario")
+        return edits
+
+
+ScenarioStatus = Literal["saved", "analyzed"]
+
+
+class ScenarioSummary(BaseModel):
+    scenario_id: str
+    analysis_id: str
+    name: str
+    created_at: datetime
+    edit_count: int
+    status: ScenarioStatus
+
+
+class ScenarioResponse(BaseModel):
+    scenario_id: str
+    analysis_id: str
+    name: str
+    created_at: datetime
+    edits: list[Edit]
+    status: ScenarioStatus
+    graph: GraphPayload | None = None
+    findings: list[Finding] | None = None
+    new_issues: list[Finding] | None = None
+    resolved_issues: list[Finding] | None = None
+    remaining_issues: list[Finding] | None = None
+    affected_nodes: list[str] | None = None
+
+
+class ScenarioListResponse(BaseModel):
+    scenarios: list[ScenarioSummary] = Field(default_factory=list)
 
 
 class AnalysisSummary(BaseModel):
     analysis_id: str
     filename: str
     created_at: datetime
+    scenario_count: int = 0
 
 
 class AnalysisResponse(BaseModel):

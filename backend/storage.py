@@ -9,7 +9,8 @@ import sqlite3
 from uuid import uuid4
 
 from .contracts import (
-    AnalysisSummary, ConceptExplanation, ExtractionIssue, Finding, GraphPayload,
+    AnalysisSummary, ConceptExplanation, Edit, ExtractionIssue, Finding, GraphPayload,
+    ScenarioSummary,
 )
 
 
@@ -44,6 +45,13 @@ def connection(db_path=None):
             cache_columns = {row["name"] for row in db.execute("PRAGMA table_info(explanations)")}
             if cache_columns and "item_key" not in cache_columns:
                 db.execute("DROP TABLE explanations")
+            db.execute("""CREATE TABLE IF NOT EXISTS scenarios (
+                id TEXT PRIMARY KEY, analysis_id TEXT NOT NULL, name TEXT NOT NULL,
+                created_at TEXT NOT NULL, edits_json TEXT NOT NULL,
+                result_json TEXT, explanation_json TEXT
+            )""")
+            db.execute("CREATE INDEX IF NOT EXISTS scenarios_by_analysis "
+                       "ON scenarios (analysis_id, created_at)")
             db.execute("""CREATE TABLE IF NOT EXISTS explanations (
                 analysis_id TEXT NOT NULL, item_key TEXT NOT NULL,
                 explanation_json TEXT NOT NULL, PRIMARY KEY (analysis_id, item_key)
@@ -128,7 +136,66 @@ def save_explanation(analysis_id: str, item_key: str, explanation, db_path=None)
 def list_history(db_path=None) -> list[AnalysisSummary]:
     with connection(db_path) as db:
         rows = db.execute(
-            "SELECT id, filename, created_at FROM analyses ORDER BY created_at DESC, rowid DESC"
+            "SELECT a.id, a.filename, a.created_at, "
+            "(SELECT COUNT(*) FROM scenarios s WHERE s.analysis_id = a.id) AS scenario_count "
+            "FROM analyses a ORDER BY a.created_at DESC, a.rowid DESC"
         ).fetchall()
     return [AnalysisSummary(analysis_id=row["id"], filename=row["filename"],
-                            created_at=datetime.fromisoformat(row["created_at"])) for row in rows]
+                            created_at=datetime.fromisoformat(row["created_at"]),
+                            scenario_count=row["scenario_count"]) for row in rows]
+
+
+def save_scenario(analysis_id: str, name: str, edits, db_path=None) -> str:
+    scenario_id = str(uuid4())
+    edits = [Edit.model_validate(edit).model_dump(mode="json") for edit in edits]
+    with connection(db_path) as db:
+        db.execute(
+            "INSERT INTO scenarios (id, analysis_id, name, created_at, edits_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (scenario_id, analysis_id, name, datetime.now(timezone.utc).isoformat(),
+             json.dumps(edits)),
+        )
+    return scenario_id
+
+
+def _scenario(row) -> dict:
+    result = json.loads(row["result_json"]) if row["result_json"] else {}
+    return {
+        "scenario_id": row["id"], "analysis_id": row["analysis_id"], "name": row["name"],
+        "created_at": datetime.fromisoformat(row["created_at"]),
+        "edits": [Edit.model_validate(item) for item in json.loads(row["edits_json"])],
+        "status": "analyzed" if result else "saved",
+        **result,
+        "explanation": (ConceptExplanation.model_validate_json(row["explanation_json"])
+                        if row["explanation_json"] else None),
+    }
+
+
+def fetch_scenario(scenario_id: str, db_path=None):
+    with connection(db_path) as db:
+        row = db.execute("SELECT * FROM scenarios WHERE id = ?", (scenario_id,)).fetchone()
+    return _scenario(row) if row else None
+
+
+def list_scenarios(analysis_id: str, db_path=None) -> list[ScenarioSummary]:
+    with connection(db_path) as db:
+        rows = db.execute(
+            "SELECT * FROM scenarios WHERE analysis_id = ? ORDER BY created_at DESC, rowid DESC",
+            (analysis_id,),
+        ).fetchall()
+    return [ScenarioSummary(**{key: value for key, value in _scenario(row).items()
+                               if key in ScenarioSummary.model_fields},
+                            edit_count=len(json.loads(row["edits_json"]))) for row in rows]
+
+
+def save_scenario_result(scenario_id: str, result: dict, db_path=None) -> None:
+    with connection(db_path) as db:
+        db.execute("UPDATE scenarios SET result_json = ? WHERE id = ?",
+                   (json.dumps(result), scenario_id))
+
+
+def save_scenario_explanation(scenario_id: str, explanation, db_path=None) -> None:
+    explanation = ConceptExplanation.model_validate(explanation)
+    with connection(db_path) as db:
+        db.execute("UPDATE scenarios SET explanation_json = ? WHERE id = ?",
+                   (explanation.model_dump_json(), scenario_id))

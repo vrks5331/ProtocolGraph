@@ -14,6 +14,14 @@ export const TYPE_EXPLANATIONS: Record<NodeType, string> = {
   analysis: 'An analysis is the statistical method used to turn the measurements into conclusions.',
 };
 
+/** What each automated check looks for, in everyday words. */
+export const CHECK_EXPLANATIONS: Record<string, string> = {
+  missing_assessment:
+    'The protocol says this result must be measured on a certain study day, but none of the visits where it is measured happen on that day or close enough to it.',
+  eligibility_conflict:
+    'Two parts of the protocol give different cutoffs for the same rule about who may join the study, so it is unclear which one applies.',
+};
+
 const RELATIONSHIP_TEMPLATES: Record<EdgeType, (source: string, target: string) => string> = {
   SUPPORTS: (source, target) => `${target} is measured to answer the objective “${source}”.`,
   MEASURED_BY: (source, target) => `${source} is measured using ${target}.`,

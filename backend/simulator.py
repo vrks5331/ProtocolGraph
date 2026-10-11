@@ -1,25 +1,69 @@
-import copy
-import networkx as nx
+"""What-if scenarios: apply metadata edits to a stored graph and diff the findings."""
 
-from .contracts import EDITABLE_SCHEDULE_FIELDS
+from __future__ import annotations
+
+from collections.abc import Iterable
+
+from .contracts import Edit, GraphPayload
+from .graph_engine import build_graph, edge_key, graph_json
 from .rules import validate
 
 
-def simulate(graph: nx.DiGraph, node_id: str, changes: dict) -> dict:
-    if node_id not in graph:
-        raise ValueError(f'Unknown node: {node_id}')
-    if not changes or set(changes) - EDITABLE_SCHEDULE_FIELDS:
-        raise ValueError('Only schedule-related fields may be changed')
-    for value in changes.values():
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise ValueError('Schedule values must be nonnegative integers')
-    modified = copy.deepcopy(graph)
-    modified.nodes[node_id].update(changes)
-    before = {x['id']: x for x in validate(graph)}
-    after = {x['id']: x for x in validate(modified)}
-    # Dependency edges can point toward or away from the edited node.
-    affected = sorted(nx.node_connected_component(modified.to_undirected(), node_id) - {node_id})
-    return {'changed_node': node_id, 'affected_nodes': affected,
-            'new_issues': [after[k] for k in sorted(after.keys() - before.keys())],
-            'resolved_issues': [before[k] for k in sorted(before.keys() - after.keys())],
-            'remaining_issues': [after[k] for k in sorted(after.keys() & before.keys())]}
+class EditError(ValueError):
+    """An edit that cannot be applied to the base graph."""
+
+
+class StaleEditError(EditError):
+    """An edit whose `before` value no longer matches the base graph."""
+
+
+def apply_edits(graph: GraphPayload, edits: Iterable[Edit]) -> GraphPayload:
+    data = graph.model_dump(mode="json")
+    nodes = {node["id"]: node for node in data["nodes"]}
+    edges = {edge_key(edge): edge for edge in data["edges"]}
+    for edit in edits:
+        items = nodes if edit.entity == "node" else edges
+        item = items.get(edit.target_id)
+        if item is None:
+            raise EditError(f"Unknown {edit.entity}: {edit.target_id}")
+        if edit.field == "value" and item.get("type") != "eligibility":
+            raise EditError("Only eligibility criteria have an editable value")
+        if item.get(edit.field) != edit.before:
+            raise StaleEditError(
+                f"{edit.field} on {edit.target_id} is {item.get(edit.field)!r}, "
+                f"not {edit.before!r}"
+            )
+        item[edit.field] = edit.after
+    return GraphPayload.model_validate(data)
+
+
+def _referenced_nodes(finding: dict) -> set[str]:
+    return {finding["node_id"], *(item["node_id"] for item in finding.get("evidence", []))}
+
+
+def run_scenario(base: GraphPayload, edits: list[Edit]) -> dict:
+    edited = apply_edits(base, edits)
+    before = {item["id"]: item for item in validate(build_graph(base))}
+    modified = build_graph(edited)
+    after = {item["id"]: item for item in validate(modified)}
+    new = [after[key] for key in sorted(after.keys() - before.keys())]
+    resolved = [before[key] for key in sorted(before.keys() - after.keys())]
+
+    edges = {edge_key(edge): edge for edge in edited.edges}
+    affected: set[str] = set()
+    for edit in edits:
+        if edit.entity == "node":
+            affected.add(edit.target_id)
+        else:
+            affected.update((edges[edit.target_id].source, edges[edit.target_id].target))
+    for finding in (*new, *resolved):
+        affected |= _referenced_nodes(finding)
+
+    return {
+        "graph": graph_json(modified),
+        "findings": list(after.values()),
+        "new_issues": new,
+        "resolved_issues": resolved,
+        "remaining_issues": [after[key] for key in sorted(after.keys() & before.keys())],
+        "affected_nodes": sorted(affected & set(modified.nodes)),
+    }

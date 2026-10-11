@@ -18,15 +18,16 @@ from .contracts import (
     ExplanationResponse,
     HistoryResponse,
     GraphPayload,
-    SimulationRequest,
-    SimulationResponse,
+    ScenarioCreate,
+    ScenarioListResponse,
+    ScenarioResponse,
     ValidationResponse,
 )
-from .explainer import concept_prompt, explain, relationship_prompt
-from .graph_engine import build_graph, graph_json
+from .explainer import concept_prompt, explain, relationship_prompt, scenario_prompt
+from .graph_engine import build_graph, edge_key, graph_json
 from .ingestion import ExtractionError, ExtractionResult, extract_analysis
 from .rules import validate
-from .simulator import simulate
+from .simulator import EditError, StaleEditError, apply_edits, run_scenario
 from . import storage
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -142,15 +143,19 @@ def _explained(analysis_id: str, cache_key: str, item_id: str, db_path,
     prompt = build_prompt(record["graph"])
     if prompt is None:
         raise HTTPException(status_code=404, detail="Item not found in this analysis")
+    explanation = _run_explainer(explainer, prompt)
+    storage.save_explanation(analysis_id, cache_key, explanation, db_path=db_path)
+    return {"item_id": item_id, **explanation.model_dump()}
+
+
+def _run_explainer(explainer: Callable, prompt: str) -> ConceptExplanation:
     try:
-        explanation = ConceptExplanation.model_validate(explainer(prompt))
+        return ConceptExplanation.model_validate(explainer(prompt))
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("Explanation failed")
         raise HTTPException(status_code=502, detail="Explanation failed") from exc
-    storage.save_explanation(analysis_id, cache_key, explanation, db_path=db_path)
-    return {"item_id": item_id, **explanation.model_dump()}
 
 
 @app.post("/graph/{analysis_id}/nodes/{node_id}/explain",
@@ -170,9 +175,7 @@ def explain_edge(analysis_id: str, edge_id: str,
                  explainer: Callable = Depends(get_explainer),
                  db_path=Depends(storage.get_database_path)):
     def build(graph: GraphPayload):
-        edge = next((item for item in graph.edges
-                     if (item.id or f"{item.source}__{item.type}__{item.target}") == edge_id),
-                    None)
+        edge = next((item for item in graph.edges if edge_key(item) == edge_id), None)
         if edge is None:
             return None
         nodes = {node.id: node for node in graph.nodes}
@@ -198,14 +201,77 @@ def validate_graph(payload: GraphPayload):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+
+def _analysis_or_404(analysis_id: str, db_path) -> dict:
+    record = storage.fetch_analysis(analysis_id, db_path=db_path)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return record
+
+
+def _scenario_or_404(scenario_id: str, db_path) -> dict:
+    scenario = storage.fetch_scenario(scenario_id, db_path=db_path)
+    if scenario is None:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    return scenario
+
+
 @app.post(
-    "/simulate",
-    response_model=SimulationResponse,
-    responses={400: {"model": ErrorResponse}},
+    "/graph/{analysis_id}/scenarios",
+    response_model=ScenarioResponse,
+    status_code=201,
+    responses={409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
-def simulate_graph(request: SimulationRequest):
+def create_scenario(analysis_id: str, request: ScenarioCreate,
+                    db_path=Depends(storage.get_database_path)):
+    record = _analysis_or_404(analysis_id, db_path)
     try:
-        graph = build_graph(request.graph)
-        return simulate(graph, request.node_id, request.changes)
-    except (ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        apply_edits(record["graph"], request.edits)
+    except StaleEditError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except EditError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    scenario_id = storage.save_scenario(analysis_id, request.name, request.edits,
+                                        db_path=db_path)
+    return storage.fetch_scenario(scenario_id, db_path=db_path)
+
+
+@app.get("/graph/{analysis_id}/scenarios", response_model=ScenarioListResponse)
+def scenarios_for_analysis(analysis_id: str, db_path=Depends(storage.get_database_path)):
+    _analysis_or_404(analysis_id, db_path)
+    return {"scenarios": storage.list_scenarios(analysis_id, db_path=db_path)}
+
+
+@app.get("/scenarios/{scenario_id}", response_model=ScenarioResponse)
+def retrieve_scenario(scenario_id: str, db_path=Depends(storage.get_database_path)):
+    return _scenario_or_404(scenario_id, db_path)
+
+
+@app.post("/scenarios/{scenario_id}/analyze", response_model=ScenarioResponse,
+          responses={409: {"model": ErrorResponse}})
+def analyze_scenario(scenario_id: str, db_path=Depends(storage.get_database_path)):
+    scenario = _scenario_or_404(scenario_id, db_path)
+    if scenario["status"] == "analyzed":
+        return scenario
+    record = _analysis_or_404(scenario["analysis_id"], db_path)
+    try:
+        result = run_scenario(record["graph"], scenario["edits"])
+    except EditError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    storage.save_scenario_result(scenario_id, result, db_path=db_path)
+    return storage.fetch_scenario(scenario_id, db_path=db_path)
+
+
+@app.post("/scenarios/{scenario_id}/explain", response_model=ExplanationResponse,
+          responses={409: {"model": ErrorResponse}})
+def explain_scenario(scenario_id: str, explainer: Callable = Depends(get_explainer),
+                     db_path=Depends(storage.get_database_path)):
+    scenario = _scenario_or_404(scenario_id, db_path)
+    if scenario["explanation"] is not None:
+        return {"item_id": scenario_id, **scenario["explanation"].model_dump()}
+    if scenario["status"] != "analyzed":
+        raise HTTPException(status_code=409, detail="Analyze the scenario before explaining it")
+    record = _analysis_or_404(scenario["analysis_id"], db_path)
+    explanation = _run_explainer(explainer, scenario_prompt(scenario, record["graph"]))
+    storage.save_scenario_explanation(scenario_id, explanation, db_path=db_path)
+    return {"item_id": scenario_id, **explanation.model_dump()}

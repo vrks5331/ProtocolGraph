@@ -6,6 +6,12 @@ import networkx as nx
 from .contracts import GraphPayload
 
 
+def edge_key(edge: Mapping[str, Any] | Any) -> str:
+    """The edge's stored id, or the stable id derived from its endpoints."""
+    get = edge.get if isinstance(edge, Mapping) else lambda name: getattr(edge, name)
+    return get("id") or f"{get('source')}__{get('type')}__{get('target')}"
+
+
 def build_graph(payload: GraphPayload | Mapping[str, Any]) -> nx.DiGraph:
     """Build a NetworkX graph from a structurally validated payload."""
     validated = (

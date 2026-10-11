@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import cytoscape, {
+  type CollectionReturnValue,
   type Core,
   type ElementDefinition,
   type EventObject,
@@ -7,6 +8,7 @@ import cytoscape, {
 } from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import { Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
+import GraphSearch from './GraphSearch';
 import type { Concept, GraphPayload, Selection } from '../lib/types';
 import { TYPE_COLORS, conceptLabel, edgeId, humanize } from '../lib/graphUtils';
 import { relationshipSentence } from '../lib/glossary';
@@ -15,6 +17,7 @@ cytoscape.use(dagre);
 
 export type GraphLayout = 'web' | 'flow';
 
+export const EDITED_COLOR = '#e5a35b';
 const TOOLTIP_WIDTH = 260;
 const MAX_CARD_LABEL = 70;
 
@@ -42,6 +45,10 @@ const webStyle: StylesheetJson = [
     },
   },
   { selector: 'node.fuzzy', style: { 'border-style': 'dashed', 'border-color': '#e0e8e3' } },
+  {
+    selector: 'node.edited',
+    style: { 'border-style': 'double', 'border-color': EDITED_COLOR, 'border-width': 5 },
+  },
   { selector: 'node.hover', style: { 'border-color': '#e0e8e3', 'border-width': 2.5 } },
   {
     selector: 'node.highlighted',
@@ -60,6 +67,15 @@ const webStyle: StylesheetJson = [
       'target-arrow-color': '#45584d',
       'target-arrow-shape': 'triangle',
       'arrow-scale': 0.7,
+    },
+  },
+  {
+    selector: 'edge.edited',
+    style: {
+      'line-style': 'dashed',
+      'line-color': EDITED_COLOR,
+      'target-arrow-color': EDITED_COLOR,
+      width: 2,
     },
   },
   {
@@ -100,6 +116,10 @@ const flowStyle: StylesheetJson = [
     },
   },
   { selector: 'node.fuzzy', style: { 'border-style': 'dashed' } },
+  {
+    selector: 'node.edited',
+    style: { 'border-style': 'double', 'border-color': EDITED_COLOR, 'border-width': 4 },
+  },
   { selector: 'node.hover', style: { 'background-color': '#222e27' } },
   {
     selector: 'node.highlighted',
@@ -123,6 +143,15 @@ const flowStyle: StylesheetJson = [
       'text-background-opacity': 1,
       'text-background-padding': '2px',
       'min-zoomed-font-size': 7,
+    },
+  },
+  {
+    selector: 'edge.edited',
+    style: {
+      'line-style': 'dashed',
+      'line-color': EDITED_COLOR,
+      'target-arrow-color': EDITED_COLOR,
+      width: 2,
     },
   },
   {
@@ -214,7 +243,28 @@ function nodeDetail(node: Concept): string | null {
   return null;
 }
 
+const NONE = new Set<string>();
+const FOCUS_ZOOM = 1.65;
+const FOCUS_PADDING = 110;
+
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+function focusElements(cy: Core, targets: CollectionReturnValue) {
+  if (targets.empty()) return;
+  cy.stop();
+  if (reducedMotion()) {
+    cy.fit(targets, FOCUS_PADDING);
+    return;
+  }
+  const box = targets.boundingBox();
+  const zoom = Math.min(
+    cy.maxZoom(),
+    FOCUS_ZOOM,
+    (cy.width() - FOCUS_PADDING * 2) / Math.max(box.w, 1),
+    (cy.height() - FOCUS_PADDING * 2) / Math.max(box.h, 1),
+  );
+  cy.animate({ zoom, center: { eles: targets } }, { duration: 520, easing: 'ease-in-out-cubic' });
+}
 
 type Hover = { kind: 'node' | 'edge'; id: string; x: number; y: number };
 
@@ -224,6 +274,7 @@ export default function ProtocolCanvas({
   selection,
   highlighted,
   fuzzy,
+  edited = NONE,
   focusRequest,
   onSelect,
 }: {
@@ -232,6 +283,8 @@ export default function ProtocolCanvas({
   selection: Selection;
   highlighted: string[];
   fuzzy: Set<string>;
+  /** Node and edge ids changed in a scenario. */
+  edited?: Set<string>;
   focusRequest: number;
   onSelect: (selection: Selection) => void;
 }) {
@@ -239,6 +292,16 @@ export default function ProtocolCanvas({
   const cyRef = useRef<Core | null>(null);
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
+  const graphRef = useRef(graph);
+  graphRef.current = graph;
+  const structure = useMemo(
+    () =>
+      JSON.stringify([
+        graph.nodes.map((node) => node.id),
+        graph.edges.map((edge) => [edgeId(edge), edge.source, edge.target]),
+      ]),
+    [graph],
+  );
   const [hover, setHover] = useState<Hover | null>(null);
   const nodesById = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph]);
   const edgesById = useMemo(
@@ -250,7 +313,7 @@ export default function ProtocolCanvas({
     if (!container.current) return;
     const cy = cytoscape({
       container: container.current,
-      elements: elements(graph),
+      elements: elements(graphRef.current),
       style: LAYOUTS[layout].style,
       layout: LAYOUTS[layout].options,
       minZoom: 0.15,
@@ -290,7 +353,18 @@ export default function ProtocolCanvas({
       cyRef.current = null;
       setHover(null);
     };
-  }, [graph, layout]);
+  }, [structure, layout]);
+
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.batch(() => {
+      for (const { data } of elements(graph)) {
+        const { id, source, target, ...rest } = data;
+        cy.getElementById(id!).data(rest);
+      }
+    });
+  }, [graph, structure, layout]);
 
   useEffect(() => {
     const cy = cyRef.current;
@@ -298,11 +372,12 @@ export default function ProtocolCanvas({
     const marked = new Set(highlighted);
     const focusing = marked.size > 0;
     cy.batch(() => {
-      cy.elements().removeClass('highlighted selected fuzzy dimmed');
+      cy.elements().removeClass('highlighted selected fuzzy dimmed edited');
       cy.nodes().forEach((node) => {
         if (marked.has(node.id())) node.addClass('highlighted');
         else if (focusing) node.addClass('dimmed');
         if (fuzzy.has(node.id())) node.addClass('fuzzy');
+        if (edited.has(node.id())) node.addClass('edited');
       });
       cy.edges().forEach((edge) => {
         if (marked.has(edge.source().id()) && marked.has(edge.target().id())) {
@@ -310,19 +385,22 @@ export default function ProtocolCanvas({
         } else if (focusing) {
           edge.addClass('dimmed');
         }
+        if (edited.has(edge.id())) edge.addClass('edited');
       });
       if (selection?.kind === 'node' || selection?.kind === 'edge') {
         cy.getElementById(selection.id).removeClass('dimmed').addClass('selected');
       }
     });
-  }, [graph, layout, selection, highlighted, fuzzy]);
+  }, [structure, layout, selection, highlighted, fuzzy, edited]);
 
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy || focusRequest === 0 || !highlighted.length) return;
     const marked = new Set(highlighted);
-    const targets = cy.nodes().filter((node) => marked.has(node.id()));
-    cy.animate({ fit: { eles: targets, padding: 80 } }, { duration: reducedMotion() ? 0 : 250 });
+    focusElements(
+      cy,
+      cy.nodes().filter((node) => marked.has(node.id())),
+    );
   }, [focusRequest, highlighted]);
 
   function zoom(factor: number) {
@@ -372,6 +450,7 @@ export default function ProtocolCanvas({
     <div className="graph-canvas">
       <div ref={container} className="cy-container" aria-label="Interactive protocol graph" />
       {hover && renderTooltip(hover)}
+      <GraphSearch graph={graph} onSelect={onSelect} />
       <div className="canvas-controls">
         <button className="icon-button" aria-label="Zoom in" onClick={() => zoom(1.25)}>
           <ZoomIn size={15} />
