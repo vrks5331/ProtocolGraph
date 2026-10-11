@@ -33,7 +33,9 @@ truststore.inject_into_ssl()
 app = FastAPI(title="ProtocolGraph graph engine")
 logger = logging.getLogger(__name__)
 MAX_PDF_BYTES = 20 * 1024 * 1024
-DEFAULT_FRONTEND_ORIGINS = "http://localhost:5173,http://localhost:3000"
+DEFAULT_FRONTEND_ORIGINS = (
+    "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:3000,http://localhost:3000"
+)
 
 app.add_middleware(
     CORSMiddleware,

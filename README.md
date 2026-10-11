@@ -52,7 +52,7 @@ GEMINI_API_KEY=your-key
 | --- | --- | --- |
 | `GEMINI_API_KEY` | none (required for `/analyze`) | Gemini API key |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Gemini model used for extraction |
-| `FRONTEND_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Comma-separated origins allowed to call the API from a browser |
+| `FRONTEND_ORIGINS` | ports 5173 and 3000 on `127.0.0.1` and `localhost` | Comma-separated origins allowed to call the API from a browser |
 | `PROTOCOLGRAPH_DB_PATH` | `~/.protocolgraph/analyses.sqlite3` | SQLite file; uploaded PDFs are stored in a `pdfs/` folder beside it |
 
 The backend uses the operating system's certificate store (via `truststore`),
@@ -62,8 +62,11 @@ so HTTPS works on networks that inspect TLS traffic.
 
 ```powershell
 python -m pip install -r requirements.txt
-python -m uvicorn backend.main:app --reload
+python -m uvicorn backend.main:app --reload --reload-dir backend
 ```
+
+The API runs at http://127.0.0.1:8000, with interactive docs at
+http://127.0.0.1:8000/docs.
 
 If `pip` fails with `CERTIFICATE_VERIFY_FAILED`, install with
 `uv pip install --native-tls -r requirements.txt` instead.
